@@ -5,19 +5,8 @@
 _start:
 	call nextch
 
-	start_wsloop:
-		lea char_class_tbl(%rip), %ebx
-		movb this_char(%rip), %al
-		xlatb
-		cmpb cc_white(%rip), %al
-		je start_wscont
-		cmpb cc_nl(%rip), %al
-		jne start_wsdone
-		start_wscont:
-		call nextch
-		jmp start_wsloop
-	
-	start_wsdone:
+	call skip_ws
+
 	call nextch
 
 	movb form(%rip), %al
@@ -56,6 +45,277 @@ accept:
 	add %rax, %rbx
 	jmp *(%rbx)
 
+skip_ws:
+	sw_loop:
+		lea char_class_tbl(%rip), %ebx
+		movb this_char(%rip), %al
+		xlatb
+		cmpb cc_white(%rip), %al
+		jne sw_done
+
+		call nextch
+		jmp sw_loop
+	
+	sw_done:
+	ret
+
+accept_string: # A string is squote-delimited. prevchar should be the string-quote (squote) character.
+	lea char_type_tbl(%rip), %ebx
+	movb prev_char(%rip), %al
+	xlatb
+
+	cmpb ct_squote, %al
+	jne as_reject
+
+	xor %rcx, %rcx
+	dec %cl # max 255 chars
+
+	lea accept_buff(%rip), %r12
+	movb $0, accept_lgt(%rip)
+
+	as_loop:
+		push %rcx
+		call nextch
+
+		lea char_class_tbl(%rip), %ebx
+		movb prev_char(%rip), %al
+		xlatb
+
+		cmpb cc_symb(%rip), %al
+		jne as_accept
+
+		lea char_type_tbl(%rip), %ebx
+		movb prev_char(%rip), %al
+		xlatb
+
+		cmpb ct_squote(%rip), %al
+		jmp as_done
+
+		cmpb ct_sesc(%rip), %al
+		jne as_accept
+
+		movb this_char(%rip), %al
+		xlatb
+		cmpb ct_sesc(%rip), %al
+		jne as_esc_squote
+
+		call nextch
+		movb $'\\', prev_char(%rip)
+		jmp as_accept
+
+		as_esc_squote:
+		cmpb ct_squote(%rip), %al
+		jne as_esc_nl
+
+		call nextch
+		movb $'"', prev_char(%rip)
+		jmp as_accept
+
+		as_esc_nl:
+		movb this_char(%rip), %al
+		cmpb $'n', %al
+		jne as_esc_tab
+
+		call nextch
+		movb $'\n', prev_char(%rip)
+		jmp as_accept
+
+		as_esc_tab:
+		cmpb $'t', %al
+		jne as_esc_nul
+
+		call nextch
+		movb $'\t', prev_char(%rip)
+		jmp as_accept
+
+		as_esc_nul:
+		cmpb $'0', %al
+		jne as_esc_squote
+
+		call nextch
+		movb $'\0', prev_char(%rip)
+		jmp as_accept
+
+		jmp as_reject
+
+		as_accept:
+			movb prev_char(%rip), %al
+			movb %al, (%r12)
+			inc %r12
+			incb accept_lgt(%rip)
+			pop %rcx
+			dec %rcx
+			test %rcx, %rcx
+			je as_reject
+			jmp as_loop
+
+	as_reject:
+		xor %rax, %rax
+		inc %rax
+		ret
+
+	as_done: # only happens when final squote is found, so always good
+		pop %rcx
+		call nextch # skip over final squote
+		xor %rax, %rax
+		ret
+
+accept_int:
+	mov $20, %rcx # max base-10 size of 64-bit ints
+	lea accept_buff(%rip), %r12
+	movb $0, accept_lgt(%rip)
+
+	lea char_class_tbl(%rip), %ebx
+	movb prev_char(%rip), %al
+	xlatb
+
+	cmpb cc_num(%rip), %al
+	jne ai_reject
+	jmp ai_accept
+
+	ai_loop:
+		call nextch
+		lea char_class_tbl(%rip), %ebx
+		movb prev_char(%rip), %al
+		xlatb
+
+		cmpb cc_num(%rip), %al
+		je ai_accept
+		jmp ai_done
+
+		ai_accept:
+			movb prev_char(%rip), %al
+			movb %al, (%r12)
+			inc %r12
+			incb accept_lgt(%rip)
+			jmp ai_loop
+
+	ai_done:
+		xor %rax, %rax
+		cmpb $0, accept_lgt(%rip)
+		jne ai_done_done
+		inc %rax
+
+		ai_done_done:
+		ret
+
+	ai_reject:
+		xor %rax, %rax
+		inc %rax
+		ret
+
+accept_float:
+	movb $0, float_lgt1(%rip)
+	movb $0, float_lgt2(%rip)
+
+	movsx int(%rip), %rax
+	call accept
+
+	test %rax, %rax
+	jne af_reject
+
+	movsx accept_lgt(%rip), %ecx
+	movb %cl, float_lgt1(%rip)
+	lea accept_buff(%rip), %rsi
+	lea float_buff1(%rip), %rdi
+	rep movsb
+
+	movb prev_char(%rip), %al
+	cmpb $'.', %al
+	jne af_reject
+
+	call nextch
+	movsx int(%rip), %rax
+	call accept
+
+	test %rax, %rax
+	jne af_reject
+
+	movb prev_char(%rip), %al
+	lea char_class_tbl(%rip), %ebx
+	xlatb
+
+	cmpb cc_char(%rip), %al
+	je af_reject
+
+	cmpb cc_symb(%rip), %al
+	jne af_accept # -> it's whitespace or control
+
+	movb prev_char(%rip), %al
+	lea char_type_tbl(%rip), %ebx
+	xlatb
+
+	cmpb ct_cpar(%rip), %al
+	jne af_reject
+
+	movsx accept_lgt(%rip), %ecx
+	movb %cl, float_lgt2(%rip)
+	lea accept_buff(%rip), %rsi
+	lea float_buff2(%rip), %rdi
+	rep movsb
+	#jmp af_accept
+
+	af_accept:
+		xor %rax, %rax
+		ret
+
+	af_reject:
+		xor %rax, %rax
+		inc %rax
+		ret
+
+accept_literal:
+	movb prev_char(%rip), %al
+	lea char_type_tbl(%rip), %ebx
+	xlatb
+
+	cmpb ct_squote(%rip), %al
+	je al_string
+
+	lea char_class_tbl(%rip), %ebx
+	movb prev_char(%rip), %al
+	xlatb
+
+	cmpb cc_num(%rip), %al
+	je al_int_or_float
+
+	jmp al_reject
+
+	al_string:
+		movsx string(%rip), %rax
+		call expect
+		xor %rax, %rax
+		ret
+
+	al_int_or_float:
+		movsx float(%rip), %rax
+		call accept
+
+		test %rax, %rax
+		je al_float
+
+		movsx float_lgt1(%rip), %rax
+		test %rax, %rax
+		je al_reject
+		jmp al_int
+
+	al_float:
+		# TODO: do a thing  with the float in the float_buffs
+		jmp al_accept
+
+	al_int:
+		# TODO: do a thing with the int in the accept_buff
+		jmp al_accept
+
+	al_reject:
+		xor %rax, %rax
+		inc %rax
+		ret
+
+	al_accept:
+		xor %rax, %rax
+		ret
+
 accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd position or later.
 	xor %r12, %r12
 	lea accept_buff(%rip), %r13
@@ -70,20 +330,26 @@ accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd
 		movb prev_char(%rip), %al
 		xlatb
 
-		cmpb cc_lowchar(%rip), %al
-		je ae_accept
-
-		cmpb cc_highchar(%rip), %al
+		cmpb cc_char(%rip), %al
 		je ae_accept
 
 		cmpb cc_symb(%rip), %al
-		je ae_accept
+		je ae_checksymbs
 
 		test %r12, %r12
 		je ae_no_num # num not allowed in position 0
 
 		cmpb cc_num(%rip), %al
 		je ae_accept
+
+		ae_checksymbs:
+			lea char_type_tbl(%rip), %ebx
+			mov prev_char(%rip), %al
+			xlatb
+
+			cmpb ct_none, %al
+			je ae_accept
+			#jmp ae_reject
 
 		ae_no_num:
 			#jmp ae_reject
@@ -107,37 +373,47 @@ accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd
 		mov %r14, %rax
 		ret
 
-noaccept:
-	lea noaccept_error(%rip), %rsi
-	mov $noaccept_error_lgt, %rdx
-	call println
+accept_atom:
+	movb prev_char(%rip), %al
+	lea char_class_tbl(%rip), %ebx
+	xlatb
 
-	mov $2, %rdi
-	call quit
+	cmpb cc_char(%rip), %al
+	je aa_var
 
-	ret
+	movsx literal(%rip), %rax
+	call accept
+
+	test %rax, %rax
+	jne aa_reject
+	jmp aa_accept
+
+	aa_var:
+		movsx var(%rip), %rax
+		call accept
+
+		test %rax, %rax
+		jne aa_reject
+		jmp aa_accept
+
+	aa_reject:
+		xor %rax, %rax
+		inc %rax
+		ret
+	
+	aa_accept:
+		xor %rax, %rax
+		ret
 
 accept_form: # A form is a non-empty s-expression whose head is either a special-form (define) or a variable.
-	lea char_class_tbl(%rip), %ebx
+	lea char_type_tbl(%rip), %ebx
 	movb prev_char(%rip), %al
 	xlatb
 
-	cmpb cc_opar(%rip), %al
+	cmpb ct_opar(%rip), %al
 	jne ef_incomplete
 
-	ef_wsloop1:
-		lea char_class_tbl(%rip), %ebx
-		movb this_char(%rip), %al
-		xlatb
-		cmpb cc_white(%rip), %al
-		je ef_wscont1
-		cmpb cc_nl(%rip), %al
-		jne ef_wsdone1
-		ef_wscont1:
-		call nextch
-		jmp ef_wsloop1
-	
-	ef_wsdone1:
+	call skip_ws
 
 	call nextch
 	xor %rax, %rax
@@ -209,36 +485,25 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		mov $8, %cl
 
 	ef_loop:
-		lea char_class_tbl(%rip), %ebx
+		lea char_type_tbl(%rip), %ebx
 		movb prev_char(%rip), %al
 		xlatb
 
-		cmpb cc_cpar(%rip), %al
+		cmpb ct_cpar(%rip), %al
 		je ef_end
 
-		ef_wsloop2:
-			lea char_class_tbl(%rip), %ebx
-			movb this_char(%rip), %al
-			xlatb
-			cmpb cc_white(%rip), %al
-			je ef_wscont2
-			cmpb cc_nl(%rip), %al
-			jne ef_wsdone2
-			ef_wscont2:
-			call nextch
-			jmp ef_wsloop2
-		
-		ef_wsdone2:
+		call skip_ws
+
 		call nextch
-		lea char_class_tbl(%rip), %ebx
+		lea char_type_tbl(%rip), %ebx
 		movb prev_char(%rip), %al
 		xlatb
 
-		cmpb cc_cpar(%rip), %al
+		cmpb ct_cpar(%rip), %al
 		je ef_end
 
 		xor %rax, %rax
-		movb var(%rip), %al
+		movb atom(%rip), %al
 		push %rcx
 		call accept
 
@@ -276,6 +541,16 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	ef_ret:
 		ret
 
+noaccept:
+	lea noaccept_error(%rip), %rsi
+	mov $noaccept_error_lgt, %rdx
+	call println
+
+	mov $2, %rdi
+	call quit
+
+	ret
+
 # error message.
 expect_error:
 	push %rax
@@ -309,10 +584,29 @@ expect_error:
 
 	ret
 
+newline_code:
+print_code:
+	dec %rsp
+	movb $0x90, (%rsp)
+	mov %rsp, %rsi
+	xor %rdx, %rdx
+	inc %rdx
+	call output
+	inc %rsp
+	ret
+
+NULL_CODE:
+	ret
+
 .data
 expect_type_tbl:
 form: .byte 0
 var: .byte 1
+string: .byte 2
+int: .byte 3
+float: .byte 4
+literal: .byte 5
+atom: .byte 6
 
 noaccept_error: .ascii "Compiler error -- no accept function for current token."
 noaccept_error_lgt = . - noaccept_error
@@ -320,28 +614,59 @@ noaccept_error_lgt = . - noaccept_error
 accept_tbl:
 .quad accept_form
 .quad accept_var
+.quad accept_string
+.quad accept_int
+.quad accept_float
+.quad accept_literal
+.quad accept_atom
 
 expect_form_error: .ascii "Missing 'form' expected"
 expect_form_error_lgt = . - expect_form_error
 expect_var_error: .ascii "Missing 'var' expected"
 expect_var_error_lgt = . - expect_var_error
+malformed_string_error: .ascii "Malformed 'string'"
+malformed_string_error_lgt = . - malformed_string_error
+bad_int_error: .ascii "Bad 'integer'"
+bad_int_error_lgt = . - bad_int_error
+bad_float_error: .ascii "Bad 'float'"
+bad_float_error_lgt = . - bad_float_error
+expect_literal_error: .ascii "Missing 'literal' expected"
+expect_literal_error_lgt = . - expect_literal_error
+expect_atom_error: .ascii "Missing 'atom' expected"
+expect_atom_error_lgt = . - expect_atom_error
 unrecognized_error: .ascii "Unrecognized input"
 unrecognized_error_lgt = . - unrecognized_error
 
-unrec_err_code: .byte 2
+unrec_err_code: .byte 7
 
 expect_error_tbl:
 .quad expect_form_error
 .quad expect_var_error
+.quad malformed_string_error
+.quad bad_int_error
+.quad bad_float_error
+.quad expect_literal_error
+.quad expect_atom_error
 .quad unrecognized_error
 
 expect_error_lgt_tbl:
 .quad expect_form_error_lgt
 .quad expect_var_error_lgt
+.quad malformed_string_error_lgt
+.quad bad_int_error_lgt
+.quad bad_float_error_lgt
+.quad expect_literal_error_lgt
+.quad expect_atom_error_lgt
 .quad unrecognized_error_lgt
 
 accept_buff: .space 256, 0
 accept_lgt: .byte 0
+
+# Buffers for float decoding (int part, then decimal part)
+float_buff1: .space 20, 0
+float_lgt1: .byte 0
+float_buff2: .space 20, 0
+float_lgt2: .byte 0
 
 define_str: .ascii "define"
 define_str_lgt = . - define_str
@@ -353,12 +678,6 @@ SYMBOL_TBL_END: .ascii "\0"
 
 comma_space: .ascii ", "
 colon_space: .ascii ": "
-
-print_code: .quad 1 # size
-.byte 0x90 # stub = NOP
-newline_code: .quad 1
-.byte 0x90 # stub = NOP
-NULL_CODE: .quad 0
 
 n_symbols: .quad 3
 symbol_tbl:
