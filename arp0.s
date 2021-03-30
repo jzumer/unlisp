@@ -562,16 +562,24 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		pop %rdi
 		mov %rsi, 16(%rdi)
 
+		lea char_type_tbl(%rip), %ebx
+		movb prev_char(%rip), %al
+		xlatb
+
+		cmpb ct_cpar(%rip), %al
+		je ef_def_done
+
 		call skip_ws
 		xor %rsi, %rsi
 		call nextch
 		lea char_type_tbl(%rip), %ebx
-		movb this_char(%rip), %al
+		movb prev_char(%rip), %al
 		xlatb
 
 		cmpb ct_cpar(%rip), %al
 		jne ef_incomplete
 
+		ef_def_done:
 		xor %rax, %rax
 		ret
 
