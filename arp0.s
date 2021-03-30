@@ -3,10 +3,12 @@
 .text
 
 _start:
+	xor %rsi, %rsi
 	call nextch
 
 	call skip_ws
 
+	xor %rsi, %rsi
 	call nextch
 
 	movb form(%rip), %al
@@ -53,6 +55,7 @@ skip_ws:
 		cmpb cc_white(%rip), %al
 		jne sw_done
 
+		xor %rsi, %rsi
 		call nextch
 		jmp sw_loop
 	
@@ -75,6 +78,7 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 
 	as_loop:
 		push %rcx
+		xor %rsi, %rsi
 		call nextch
 
 		lea char_class_tbl(%rip), %ebx
@@ -99,6 +103,7 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		cmpb ct_sesc(%rip), %al
 		jne as_esc_squote
 
+		xor %rsi, %rsi
 		call nextch
 		movb $'\\', prev_char(%rip)
 		jmp as_accept
@@ -107,6 +112,7 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		cmpb ct_squote(%rip), %al
 		jne as_esc_nl
 
+		xor %rsi, %rsi
 		call nextch
 		movb $'"', prev_char(%rip)
 		jmp as_accept
@@ -116,6 +122,7 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		cmpb $'n', %al
 		jne as_esc_tab
 
+		xor %rsi, %rsi
 		call nextch
 		movb $'\n', prev_char(%rip)
 		jmp as_accept
@@ -124,6 +131,7 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		cmpb $'t', %al
 		jne as_esc_nul
 
+		xor %rsi, %rsi
 		call nextch
 		movb $'\t', prev_char(%rip)
 		jmp as_accept
@@ -132,6 +140,7 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		cmpb $'0', %al
 		jne as_esc_squote
 
+		xor %rsi, %rsi
 		call nextch
 		movb $'\0', prev_char(%rip)
 		jmp as_accept
@@ -156,6 +165,7 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 
 	as_done: # only happens when final squote is found, so always good
 		pop %rcx
+		xor %rsi, %rsi
 		call nextch # skip over final squote
 		xor %rax, %rax
 		ret
@@ -174,6 +184,7 @@ accept_int:
 	jmp ai_accept
 
 	ai_loop:
+		xor %rsi, %rsi
 		call nextch
 		lea char_class_tbl(%rip), %ebx
 		movb prev_char(%rip), %al
@@ -224,6 +235,7 @@ accept_float:
 	cmpb $'.', %al
 	jne af_reject
 
+	xor %rsi, %rsi
 	call nextch
 	movsx int(%rip), %rax
 	call accept
@@ -342,6 +354,8 @@ accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd
 		cmpb cc_num(%rip), %al
 		je ae_accept
 
+		jmp ae_reject
+
 		ae_checksymbs:
 			lea char_type_tbl(%rip), %ebx
 			mov prev_char(%rip), %al
@@ -364,6 +378,7 @@ accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd
 			inc %r13
 			inc %r12
 			push %rcx
+			xor %rsi, %rsi
 			call nextch
 			pop %rcx
 			loop ae_loop
@@ -405,6 +420,26 @@ accept_atom:
 		xor %rax, %rax
 		ret
 
+accept_expr:
+	movb prev_char(%rip), %al
+	lea char_type_tbl(%rip), %ebx
+	xlatb
+
+	cmpb ct_opar(%rip), %al
+	je ae2_tryform
+
+	ae2_tryatom:
+		movsx atom(%rip), %rax
+		jmp ae2_after
+
+	ae2_tryform:
+		movsx form(%rip), %rax
+
+	ae2_after:
+		jmp accept
+		#ret # Return whatever the returned error code was (via %rax)
+
+
 accept_form: # A form is a non-empty s-expression whose head is either a special-form (define) or a variable.
 	lea char_type_tbl(%rip), %ebx
 	movb prev_char(%rip), %al
@@ -415,6 +450,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 	call skip_ws
 
+	xor %rsi, %rsi
 	call nextch
 	xor %rax, %rax
 	movb var(%rip), %al
@@ -440,7 +476,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		sub %rcx, %rdx
 		push %rcx
 		lea symbol_tbl(%rip), %rdi # Load symbol table
-		lea (%rdx,%rdx,2), %rcx # %rdx + 2*%rdx
+		lea (%rdx,%rdx,2), %rcx # 4 %rdx
 		lea (%rdi,%rcx,8), %rcx # %rdi + 8*(3*%rdx) = %rdi + 24*%rdx
 		#lea 0(%rdi), %rdi # [key] is first; no offset
 		mov 8(%rdi), %rbx # [length]
@@ -473,14 +509,75 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	jmp ef_call
 
 	ef_def: # handle 'define' special form
-		movsx accept_lgt(%rip), %edx
-		lea accept_buff(%rip), %rsi
-		call println # stub
+		call skip_ws
+		xor %rsi, %rsi
+		call nextch
 
-		jmp ef_call # stub
-	
+		movsx var(%rip), %rax
+		call accept
+		test %rax, %rax
+		jne ef_incomplete
+
+		mov n_symbols(%rip), %r12
+		inc %r12
+		mov %r12, n_symbols(%rip)
+
+		movsx accept_lgt(%rip), %ecx
+		push %rcx
+
+		# malloc new str
+		mov %rcx, %rsi
+		call malloc
+
+		test %rax, %rax
+		jz err_malloc_failed
+		# mov %rdi, %rdi
+		mov %rdi, %r13
+
+		pop %rcx
+
+		lea accept_buff(%rip), %rsi
+
+		# copy str to new memory location
+		rep movsb
+
+		lea symbol_tbl(%rip), %rdi
+		lea (%r12,%r12,2), %r12
+		lea (%rdi,%r12,8), %rdi
+		push %rdi # Save it for when we generate the code (it shall be put in 16(%rdi))
+		movq %rcx, 8(%rdi)
+		# save str ptr in symbol_tbl
+		movq %r13, (%rdi)
+
+		call skip_ws
+		xor %rsi, %rsi
+		call nextch
+
+		movsx expr(%rip), %rax
+		call accept
+
+		test %rax, %rax
+		jne ef_incomplete
+		mov last_ip(%rip), %rsi
+		pop %rdi
+		mov %rsi, 16(%rdi)
+
+		call skip_ws
+		xor %rsi, %rsi
+		call nextch
+		lea char_type_tbl(%rip), %ebx
+		movb this_char(%rip), %al
+		xlatb
+
+		cmpb ct_cpar(%rip), %al
+		jne ef_incomplete
+
+		xor %rax, %rax
+		ret
+
+		#call println # stub
+
 	ef_call:
-		xor %r12, %r12
 		xor %rcx, %rcx
 		mov $8, %cl
 
@@ -494,6 +591,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		call skip_ws
 
+		xor %rsi, %rsi
 		call nextch
 		lea char_type_tbl(%rip), %ebx
 		movb prev_char(%rip), %al
@@ -503,7 +601,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		je ef_end
 
 		xor %rax, %rax
-		movb atom(%rip), %al
+		movsx expr(%rip), %rax
 		push %rcx
 		call accept
 
@@ -584,6 +682,15 @@ expect_error:
 
 	ret
 
+err_malloc_failed:
+	lea malloc_error(%rip), %rsi
+	lea malloc_error_lgt(%rip), %rdx
+	call println
+
+	xor %rdi, %rdi
+	dec %rdi
+	call quit
+
 newline_code:
 print_code:
 	dec %rsp
@@ -607,6 +714,7 @@ int: .byte 3
 float: .byte 4
 literal: .byte 5
 atom: .byte 6
+expr: .byte 7
 
 noaccept_error: .ascii "Compiler error -- no accept function for current token."
 noaccept_error_lgt = . - noaccept_error
@@ -619,6 +727,10 @@ accept_tbl:
 .quad accept_float
 .quad accept_literal
 .quad accept_atom
+.quad accept_expr
+
+malloc_error: .ascii "FATAL: malloc failed"
+malloc_error_lgt = . - malloc_error
 
 expect_form_error: .ascii "Missing 'form' expected"
 expect_form_error_lgt = . - expect_form_error
@@ -634,10 +746,12 @@ expect_literal_error: .ascii "Missing 'literal' expected"
 expect_literal_error_lgt = . - expect_literal_error
 expect_atom_error: .ascii "Missing 'atom' expected"
 expect_atom_error_lgt = . - expect_atom_error
+expect_expr_error: .ascii "Missing 'expr' expected"
+expect_expr_error_lgt = . - expect_expr_error
 unrecognized_error: .ascii "Unrecognized input"
 unrecognized_error_lgt = . - unrecognized_error
 
-unrec_err_code: .byte 7
+unrec_err_code: .byte 8
 
 expect_error_tbl:
 .quad expect_form_error
@@ -647,6 +761,7 @@ expect_error_tbl:
 .quad bad_float_error
 .quad expect_literal_error
 .quad expect_atom_error
+.quad expect_expr_error
 .quad unrecognized_error
 
 expect_error_lgt_tbl:
@@ -657,6 +772,7 @@ expect_error_lgt_tbl:
 .quad bad_float_error_lgt
 .quad expect_literal_error_lgt
 .quad expect_atom_error_lgt
+.quad expect_expr_error_lgt
 .quad unrecognized_error_lgt
 
 accept_buff: .space 256, 0
@@ -679,11 +795,19 @@ SYMBOL_TBL_END: .ascii "\0"
 comma_space: .ascii ", "
 colon_space: .ascii ": "
 
+last_ip: .quad 0 # instruction pointer starting at previous insertion point
+ip: .quad 0 # instruction pointer at the end of previous insertion
+
 n_symbols: .quad 3
+
 symbol_tbl:
 .quad print_str, print_str_lgt, print_code
 .quad newline_str, newline_str_lgt, newline_code
+.space 65536, 0
 .quad SYMBOL_TBL_END, 0, NULL_CODE
+
+program:
+.space 65536, 0 # Enough space for the bootstrap program
 
 last_charnum: .quad 0
 last_linum: .quad 0

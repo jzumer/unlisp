@@ -10,6 +10,7 @@
 .global ct_nl
 .global ct_squote # string quote
 .global ct_sesc # string escape
+.global ct_comment # comment character
 
 .global cc_symb
 .global cc_white
@@ -32,6 +33,7 @@ ct_cpar: .byte 2
 ct_nl: .byte 3
 ct_squote: .byte 4
 ct_sesc: .byte 5
+ct_comment: .byte 6
 
 char_class_tbl:
 .byte 0 #\NUL
@@ -223,7 +225,7 @@ char_type_tbl:
 .byte 0
 .byte 0 #9
 .byte 0 #:
-.byte 0 #;
+.byte 6 #;
 .byte 0 #<
 .byte 0 #=
 .byte 0 #>
