@@ -23,11 +23,16 @@
 
 nextch: # save the previous char, load the next char, fix linum/charnum based on previous char being \n or not. rsi=1 means skip to eol.
 	push %rsi
+	test %rsi, %rsi
+	jnz skip_flip
+
 	lea this_char(%rip), %rax
 	movb (%rax), %al
 	lea prev_char(%rip), %rdi
 	movb %al, (%rdi)
 
+	skip_flip: # Do not push the previous char in the current slot if this is a comment string,
+	# just keep skipping chars so as to put the first non-comment char right after the current char.
 	xor %rax, %rax # read
 	xor %rdi, %rdi # stdin
 	lea this_char(%rip), %rsi # what

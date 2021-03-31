@@ -1,3 +1,5 @@
+# Special notes: due to endianness, movw 0xc0ff, * is the correct sequence for inc %rbx, not ffc0.
+# TODO: check that things are encoded correctly re: endianness
 .global _start
 
 .text
@@ -13,6 +15,11 @@ _start:
 
 	movb form(%rip), %al
 	call expect
+
+	movq ip(%rip), %rdx
+	lea program(%rip), %rsi
+
+brk_end:	call output # print out the program
 
 	xor %rdi, %rdi # code 0
 	call quit
@@ -93,11 +100,12 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		xlatb
 
 		cmpb ct_squote(%rip), %al
-		jmp as_done
+		je as_done
 
 		cmpb ct_sesc(%rip), %al
 		jne as_accept
 
+		lea char_type_tbl(%rip), %ebx
 		movb this_char(%rip), %al
 		xlatb
 		cmpb ct_sesc(%rip), %al
@@ -296,6 +304,23 @@ accept_literal:
 	al_string:
 		movsx string(%rip), %rax
 		call expect
+
+		# Copy string into program verbatim
+		movsx accept_lgt(%rip), %ecx
+		mov ip(%rip), %rax
+		mov %rax, prev_ip(%rip)
+		lea accept_buff(%rip), %rsi
+		lea program(%rip), %rdi
+		add prev_ip(%rip), %rdi
+		mov %rcx, (%rdi)
+		add $8, %rdi # start after the str length
+		rep movsb
+
+		add accept_lgt(%rip), %rax
+		add $8, %rax
+		mov %rax, ip(%rip)
+
+		mov prev_ip(%rip), %rsi
 		xor %rax, %rax
 		ret
 
@@ -386,6 +411,11 @@ accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd
 	ae_end:
 		movb %r12b, accept_lgt(%rip)
 		mov %r14, %rax
+		test %rax, %rax
+		jnz ae_ret
+		call find_symbol
+
+		ae_ret:
 		ret
 
 accept_atom:
@@ -398,26 +428,11 @@ accept_atom:
 
 	movsx literal(%rip), %rax
 	call accept
-
-	test %rax, %rax
-	jne aa_reject
-	jmp aa_accept
+	ret
 
 	aa_var:
 		movsx var(%rip), %rax
 		call accept
-
-		test %rax, %rax
-		jne aa_reject
-		jmp aa_accept
-
-	aa_reject:
-		xor %rax, %rax
-		inc %rax
-		ret
-	
-	aa_accept:
-		xor %rax, %rax
 		ret
 
 accept_expr:
@@ -439,6 +454,52 @@ accept_expr:
 		jmp accept
 		#ret # Return whatever the returned error code was (via %rax)
 
+find_symbol: # Returns matched code address on %rsi, %rax is error code
+	mov n_symbols(%rip), %rcx
+
+	fs_callloop:
+		mov n_symbols(%rip), %rdx # Load index from 0 into rdx (rcx counts down from the top)
+		sub %rcx, %rdx
+		push %rcx
+		lea symbol_tbl(%rip), %rdi # Load symbol table
+		lea (%rdx,%rdx,2), %rcx # 3 %rdx
+		lea (%rdi,%rcx,8), %rcx # %rdi + 8*(3*%rdx) = %rdi + 24*%rdx
+		#lea 0(%rdi), %rdi # [key] is first; no offset
+		mov 8(%rdi), %rbx # [length]
+		movsx accept_lgt(%rip), %ecx
+		cmp %rbx, %rcx
+		jne fs_cl_tail
+
+		lea 16(%rdi), %r12
+		mov (%rdi), %rdi # This points to a cell: [key, key-length, code address], from which we want [key]
+		lea accept_buff(%rip), %rsi
+		repe cmpsb
+		jz fs_done_cl
+
+		fs_cl_tail:
+		pop %rcx
+		dec %rcx
+		test %rcx, %rcx
+		jne fs_callloop
+		jmp fs_after_cl
+
+	fs_done_cl:
+	#mov 16(%r12), %rsi
+	mov %r12, %rsi
+	pop %rcx
+	fs_after_cl:
+	test %rcx, %rcx
+	je fs_unrecognized
+
+	xor %rax, %rax
+	ret
+
+	fs_unrecognized:
+		xor %rax, %rax
+		inc %rax
+		inc %rax
+
+		ret
 
 accept_form: # A form is a non-empty s-expression whose head is either a special-form (define) or a variable.
 	lea char_type_tbl(%rip), %ebx
@@ -455,8 +516,9 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	xor %rax, %rax
 	movb var(%rip), %al
 	call accept
+	dec %rax # check for code 1 to avoid 0 (good) or 2 (var exists and is unbound)
 	test %rax, %rax
-	jne ef_incomplete
+	je ef_incomplete
 
 	cld
 	movsx accept_lgt(%rip), %ecx
@@ -469,43 +531,14 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	jz ef_def
 
 	ef_nodef:
-	mov n_symbols(%rip), %rcx
-
-	ef_callloop:
-		mov n_symbols(%rip), %rdx # Load index from 0 into rdx (rcx counts down from the top)
-		sub %rcx, %rdx
-		push %rcx
-		lea symbol_tbl(%rip), %rdi # Load symbol table
-		lea (%rdx,%rdx,2), %rcx # 4 %rdx
-		lea (%rdi,%rcx,8), %rcx # %rdi + 8*(3*%rdx) = %rdi + 24*%rdx
-		#lea 0(%rdi), %rdi # [key] is first; no offset
-		mov 8(%rdi), %rbx # [length]
-		movsx accept_lgt(%rip), %ecx
-		cmp %rbx, %rcx
-		jne ef_cl_tail
-
-		mov (%rdi), %rdi # This points to a cell: [key, key-length, code address], from which we want [key]
-		lea accept_buff(%rip), %rsi
-		repe cmpsb
-		jz ef_done_cl
-
-		ef_cl_tail:
-		pop %rcx
-		dec %rcx
-		test %rcx, %rcx
-		jne ef_callloop
-		jmp ef_after_cl
-
-	ef_done_cl:
-	pop %rcx
-	ef_after_cl:
-	test %rcx, %rcx
-	je ef_unrecognized
+	call find_symbol # returns code address on rsi
+	test %rax, %rax
+brk1:	jnz ef_unrecognized
 
 	# Do processing for fn call here
-	movsx accept_lgt(%rip), %edx
-	lea accept_buff(%rip), %rsi
-	call println # stub
+	#movsx accept_lgt(%rip), %edx
+	#lea accept_buff(%rip), %rsi
+	#call println # stub
 	jmp ef_call
 
 	ef_def: # handle 'define' special form
@@ -516,8 +549,12 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movsx var(%rip), %rax
 		call accept
 		test %rax, %rax
-		jne ef_incomplete
+		jz ef_redef # symbol exist so it's being redefined
 
+		cmp $2, %rax # symbol does not exist, so a new one is being defined (this is OK, too)
+		jnz ef_incomplete # a different error code is present, no good!
+
+		ef_redef:
 		mov n_symbols(%rip), %r12
 		inc %r12
 		mov %r12, n_symbols(%rip)
@@ -558,9 +595,9 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		test %rax, %rax
 		jne ef_incomplete
-		mov last_ip(%rip), %rsi
+		mov prev_ip(%rip), %rsi
 		pop %rdi
-		mov %rsi, 16(%rdi)
+		mov %rsi, 16(%rdi) # XXX: This is wrong, should put the code generator function here and not the value.
 
 		lea char_type_tbl(%rip), %ebx
 		movb prev_char(%rip), %al
@@ -586,6 +623,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		#call println # stub
 
 	ef_call:
+		push %rsi # Save function's address for the call at the end
 		xor %rcx, %rcx
 		mov $8, %cl
 
@@ -595,22 +633,24 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		xlatb
 
 		cmpb ct_cpar(%rip), %al
-		je ef_end
+		je ef_postloop
 
 		call skip_ws
 
+		push %rcx
 		xor %rsi, %rsi
 		call nextch
+		pop %rcx
 		lea char_type_tbl(%rip), %ebx
 		movb prev_char(%rip), %al
 		xlatb
 
 		cmpb ct_cpar(%rip), %al
-		je ef_end
+		je ef_postloop
 
+		push %rcx
 		xor %rax, %rax
 		movsx expr(%rip), %rax
-		push %rcx
 		call accept
 
 		test %rax, %rax # success
@@ -620,12 +660,60 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		jmp ef_incomplete
 
 		ef_cont:
-		lea accept_buff(%rip), %rsi
-		movb accept_lgt(%rip), %dl
-		call println
+		#lea accept_buff(%rip), %rsi
+		#movb accept_lgt(%rip), %dl
+		#call println
 		pop %rcx
+		push %rsi # push arg to stack, pull it up later
 
 		loop ef_loop
+
+	ef_postloop:
+	mov $8, %r12
+	sub %rcx, %r12
+	test %r12, %r12
+	jz ef_gencall
+
+	pop %rax
+	dec %r12
+	test %r12, %r12
+	jz ef_gencall
+
+	pop %rbx
+	dec %r12
+	test %r12, %r12
+	jz ef_gencall
+
+	pop %rcx
+	dec %r12
+	test %r12, %r12
+	jz ef_gencall
+
+	pop %rdx
+	dec %r12
+	test %r12, %r12
+	jz ef_gencall
+
+	pop %rsi
+	dec %r12
+	test %r12, %r12
+	jz ef_gencall
+
+	pop %rdi
+	dec %r12
+	test %r12, %r12
+	jz ef_gencall
+
+	pop %r8
+	dec %r12
+	test %r12, %r12
+	jz ef_gencall
+
+	pop %r9
+
+	ef_gencall:
+		pop %r12 # the function
+		call *(%r12)
 
 	ef_end:
 		#sub $8, %rcx
@@ -700,14 +788,54 @@ err_malloc_failed:
 	call quit
 
 newline_code:
-print_code:
-	dec %rsp
-	movb $0x90, (%rsp)
-	mov %rsp, %rsi
-	xor %rdx, %rdx
-	inc %rdx
-	call output
-	inc %rsp
+print_code: # %rax is the in-program address of the string
+	lea program(%rip), %rbx
+	mov %rbx, %rdx
+	add %rbx, %rax # rax is now a valid ptr
+	movq ip(%rip), %rcx
+	add %rcx, %rbx
+	movq %rcx, prev_ip(%rip)
+
+	movb $0x48, (%rbx) # REX.W
+	movb $0xba, 1(%rbx) # mov immediate 64b to %rdx
+	movq (%rax), %rcx
+	movq %rcx, 2(%rbx) # value of str length
+	add $8, %rax # %rax is now proper address of string
+	sub %rdx, %rax # now back to program-relative
+	add $10, %rbx
+	movb $0x48, (%rbx)
+	movb $0xbe, 1(%rbx) # mov immediate 64b to %rsi
+	movq %rax, 2(%rbx) # address of the string input
+	add $10, %rbx
+	movb $0x48, (%rbx)
+	movw $0xc031, 1(%rbx) # xor %rbx, %rbx
+	inc %rbx
+	inc %rbx
+	inc %rbx
+	movb $0x48, (%rbx)
+	movw $0xc0ff, 1(%rbx) # inc %rbx
+	inc %rbx
+	inc %rbx
+	inc %rbx
+	movb $0x48, (%rbx)
+	movw $0xff31, 1(%rbx) # xor %rdi, %rdi
+	inc %rbx
+	inc %rbx
+	inc %rbx
+	movb $0x48, (%rbx) 
+	movw $0xc7ff, 1(%rbx) # inc %rdi = stdout
+	inc %rbx
+	inc %rbx
+	inc %rbx
+	movw $0x050f, (%rbx) # syscall
+	inc %rbx
+	inc %rbx
+
+	lea program(%rip), %rcx
+	sub %rcx, %rbx
+	movq %rbx, ip(%rip)
+	xor %rax, %rax
+
 	ret
 
 NULL_CODE:
@@ -803,7 +931,7 @@ SYMBOL_TBL_END: .ascii "\0"
 comma_space: .ascii ", "
 colon_space: .ascii ": "
 
-last_ip: .quad 0 # instruction pointer starting at previous insertion point
+prev_ip: .quad 0 # instruction pointer starting at previous insertion point
 ip: .quad 0 # instruction pointer at the end of previous insertion
 
 n_symbols: .quad 3
