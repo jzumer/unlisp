@@ -1,10 +1,15 @@
 # Special notes: due to endianness, movw 0xc0ff, * is the correct sequence for inc %rbx, not ffc0.
-# TODO: check that things are encoded correctly re: endianness
+.global ip
+.global prev_ip
+.global program
+
 .global _start
 
 .text
 
 _start:
+	call make_header
+
 	xor %rsi, %rsi
 	call nextch
 
@@ -16,12 +21,30 @@ _start:
 	movb form(%rip), %al
 	call expect
 
+	main_loop:
+	call skip_ws
+	xor %rsi, %rsi
+	call nextch
+	call skip_ws
+
+	movb prev_char(%rip), %al
+	cmpb $3, %al # EOT
+	je main_end
+
+	movb form(%rip), %al
+	call expect
+	jmp main_loop
+
+	main_end:
+	# XXX: copy data section into file first, saving data start somewhere
+	call make_footer
+
 	movq ip(%rip), %rdx
 	lea program(%rip), %rsi
 
-brk_end:	call output # print out the program
+	call output # print out the program
 
-	xor %rdi, %rdi # code 0
+	xor %rdi, %rdi # all good, code 0
 	call quit
 
 expect:
@@ -311,7 +334,7 @@ accept_literal:
 		mov %rax, prev_ip(%rip)
 		lea accept_buff(%rip), %rsi
 		lea program(%rip), %rdi
-		add prev_ip(%rip), %rdi
+		add ip(%rip), %rdi
 		mov %rcx, (%rdi)
 		add $8, %rdi # start after the str length
 		rep movsb
@@ -440,10 +463,13 @@ accept_expr:
 	lea char_type_tbl(%rip), %ebx
 	xlatb
 
+	xor %rbx, %rbx
+
 	cmpb ct_opar(%rip), %al
 	je ae2_tryform
 
 	ae2_tryatom:
+		inc %rbx
 		movsx atom(%rip), %rax
 		jmp ae2_after
 
@@ -451,8 +477,10 @@ accept_expr:
 		movsx form(%rip), %rax
 
 	ae2_after:
-		jmp accept
-		#ret # Return whatever the returned error code was (via %rax)
+		push %rbx
+		call accept
+		pop %rbx # %rbx is 1 if this was an atom, 0  if it was a form (i.e. a function call of some sort)
+		ret # Return whatever the returned error code was (via %rax)
 
 find_symbol: # Returns matched code address on %rsi, %rax is error code
 	mov n_symbols(%rip), %rcx
@@ -496,8 +524,7 @@ find_symbol: # Returns matched code address on %rsi, %rax is error code
 
 	fs_unrecognized:
 		xor %rax, %rax
-		inc %rax
-		inc %rax
+		add $2, %rax
 
 		ret
 
@@ -533,7 +560,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	ef_nodef:
 	call find_symbol # returns code address on rsi
 	test %rax, %rax
-brk1:	jnz ef_unrecognized
+	jnz ef_unrecognized
 
 	# Do processing for fn call here
 	#movsx accept_lgt(%rip), %edx
@@ -597,7 +624,7 @@ brk1:	jnz ef_unrecognized
 		jne ef_incomplete
 		mov prev_ip(%rip), %rsi
 		pop %rdi
-		mov %rsi, 16(%rdi) # XXX: This is wrong, should put the code generator function here and not the value.
+		mov %rsi, 16(%rdi)
 
 		lea char_type_tbl(%rip), %ebx
 		movb prev_char(%rip), %al
@@ -624,8 +651,12 @@ brk1:	jnz ef_unrecognized
 
 	ef_call:
 		push %rsi # Save function's address for the call at the end
-		xor %rcx, %rcx
+		lea reg_shuffle_codes(%rip), %rdx
 		mov $8, %cl
+		mov ip(%rip), %rax
+		mov %rax, prev_ip(%rip)
+		lea program(%rip), %rax
+		add ip(%rip), %rax
 
 	ef_loop:
 		lea char_type_tbl(%rip), %ebx
@@ -663,57 +694,69 @@ brk1:	jnz ef_unrecognized
 		#lea accept_buff(%rip), %rsi
 		#movb accept_lgt(%rip), %dl
 		#call println
-		pop %rcx
-		push %rsi # push arg to stack, pull it up later
+		push %rsi
+		push %rbx
 
+		pop %rcx # pop cnt
 		loop ef_loop
 
 	ef_postloop:
-	mov $8, %r12
-	sub %rcx, %r12
-	test %r12, %r12
-	jz ef_gencall
-
-	pop %rax
-	dec %r12
-	test %r12, %r12
-	jz ef_gencall
-
+	cmp $7, %rcx # i.e. 1 arg
+	jnz ef_dopost # in that case, don't generate code as the ret is already on %rax. Oherwise, go.
+	
 	pop %rbx
-	dec %r12
-	test %r12, %r12
-	jz ef_gencall
-
-	pop %rcx
-	dec %r12
-	test %r12, %r12
-	jz ef_gencall
-
-	pop %rdx
-	dec %r12
-	test %r12, %r12
-	jz ef_gencall
-
 	pop %rsi
-	dec %r12
-	test %r12, %r12
+	test %rbx, %rbx
 	jz ef_gencall
 
-	pop %rdi
-	dec %r12
-	test %r12, %r12
-	jz ef_gencall
+	push %rsi
+	push %rbx # otherwise, put it back since it's a literal
 
-	pop %r8
-	dec %r12
-	test %r12, %r12
-	jz ef_gencall
+	ef_dopost:
+	mov %rcx, %rdx # offset from code tables is as much as leftover count
+	sub $8, %cl # counter
+	mov ip(%rip), %r8
+	mov %r8, prev_ip(%rip)
+	lea program(%rip), %r8
+	add ip(%rip), %r8
+	lea reg_imm_codes(%rip), %r13
+	lea reg_shuffle_codes(%rip), %r14
 
-	pop %r9
+	ef_loop2:
+		pop %rbx
+		pop %rsi
+		test %rbx, %rbx
+		jz ef_arg_was_call
+
+		# insert literal mov
+		movw (%r13,%rdx,2), %ax
+		mov %ax, (%r8)
+		movq %rsi, 2(%r8)
+		add $10, %r8
+		jmp ef_arg_processed
+
+		ef_arg_was_call:
+		# insert mov %rax, this_reg [rdx = mov code, 3 bytes each]
+		lea (%r14,%rdx,2), %rdi
+		lea (%rdi,%rdx), %rdi
+		movw (%rdi), %ax
+		movw %ax, (%r8)
+		movb 2(%rdi), %al
+		movb %al, 2(%r8)
+		add $3, %r8
+
+		ef_arg_processed:
+		inc %rdx
+		loop ef_loop2
 
 	ef_gencall:
+		movb $0xe8, (%r8)
 		pop %r12 # the function
-		call *(%r12)
+		sub %r8, %r12 # address is relative, including 0xe8=call opcode's byte, so we need (%r12 - ip) - 8 from current ip, but we haven't added 8 to ip yet, thus
+		# (%r12 - ip=%r8) is enough.
+		movl %r12d, 1(%r8)
+		add $6, %r8
+		mov %r8, ip(%rip)
 
 	ef_end:
 		#sub $8, %rcx
@@ -728,8 +771,7 @@ brk1:	jnz ef_unrecognized
 
 	ef_unrecognized:
 		xor %rax, %rax
-		inc %rax
-		inc %rax
+		add $2, %rax
 		#jmp ef_ret
 
 	ef_ret:
@@ -752,15 +794,13 @@ expect_error:
 	call printint
 	lea comma_space(%rip), %rsi
 	xor %rdx, %rdx
-	inc %rdx
-	inc %rdx
+	add $2, %rdx
 	call print
 	mov last_charnum(%rip), %rsi
 	call printint
 	lea colon_space(%rip), %rsi
 	xor %rdx, %rdx
-	inc %rdx
-	inc %rdx
+	add $2, %rdx
 	call print
 	pop %rax
 	lea expect_error_tbl(%rip), %rsi
@@ -809,27 +849,18 @@ print_code: # %rax is the in-program address of the string
 	add $10, %rbx
 	movb $0x48, (%rbx)
 	movw $0xc031, 1(%rbx) # xor %rbx, %rbx
-	inc %rbx
-	inc %rbx
-	inc %rbx
+	add $3, %rbx
 	movb $0x48, (%rbx)
 	movw $0xc0ff, 1(%rbx) # inc %rbx
-	inc %rbx
-	inc %rbx
-	inc %rbx
+	add $3, %rbx
 	movb $0x48, (%rbx)
 	movw $0xff31, 1(%rbx) # xor %rdi, %rdi
-	inc %rbx
-	inc %rbx
-	inc %rbx
+	add $3, %rbx
 	movb $0x48, (%rbx) 
 	movw $0xc7ff, 1(%rbx) # inc %rdi = stdout
-	inc %rbx
-	inc %rbx
-	inc %rbx
+	add $3, %rbx
 	movw $0x050f, (%rbx) # syscall
-	inc %rbx
-	inc %rbx
+	add $2, %rbx
 
 	lea program(%rip), %rcx
 	sub %rcx, %rbx
@@ -932,18 +963,48 @@ comma_space: .ascii ", "
 colon_space: .ascii ": "
 
 prev_ip: .quad 0 # instruction pointer starting at previous insertion point
-ip: .quad 0 # instruction pointer at the end of previous insertion
+ip: .quad last_code_rel - program # instruction pointer at the end of previous insertion
 
 n_symbols: .quad 3
 
 symbol_tbl:
-.quad print_str, print_str_lgt, print_code
-.quad newline_str, newline_str_lgt, newline_code
+.quad print_str, print_str_lgt, print_code_rel - program
+.quad newline_str, newline_str_lgt, 0
 .space 65536, 0
 .quad SYMBOL_TBL_END, 0, NULL_CODE
 
 program:
+print_code_rel: # 'what' in %rax with format (quad)size, actual_str. For sys_write, 'what' is in %rsi and 'how much' in %rdx.
+.byte 0x48, 0x8b, 0x10 # mov (%rax), %rdx
+.byte 0x48, 0x8d, 0x70, 0x08 # lea 8(%rax), %rsi
+.byte 0x48, 0x31, 0xc0 # xor %rax, %rax
+.byte 0x48, 0xff, 0xc0 # inc %rax -> sys_write
+.byte 0x48, 0x31, 0xff # xor %rdi, %rdi
+.byte 0x48, 0xff, 0xc7 # inc %rdi -> stdout
+.byte 0x0f, 0x05 # syscall
+.byte 0xc3 # ret
+last_code_rel:
 .space 65536, 0 # Enough space for the bootstrap program
+
+reg_shuffle_codes:
+.byte 0b01001001, 0b10001001, 0b11000001 # rax -> r9
+.byte 0b01001001, 0b10001001, 0b11000000 # rax -> r8
+.byte 0b01001000, 0b10001001, 0b11000111 # rax -> rsi
+.byte 0b01001000, 0b10001001, 0b11000110 # rax -> rdi
+.byte 0b01001000, 0b10001001, 0b11000011 # rax -> rbx
+.byte 0b01001000, 0b10001001, 0b11000010 # rax -> rdx
+.byte 0b01001000, 0b10001001, 0b11000001 # rax -> rcx
+.byte 0b01001000, 0b10001001, 0b11000000 # rax -> rax, in fact should never be generated
+
+reg_imm_codes: # load this, then append literal val
+.byte 0b1001001, 0b10111001
+.byte 0b1001001, 0b10111000
+.byte 0b1001000, 0b10111111
+.byte 0b1001000, 0b10111110
+.byte 0b1001000, 0b10111011
+.byte 0b1001000, 0b10111010
+.byte 0b1001000, 0b10111001
+.byte 0b1001000, 0b10111000
 
 last_charnum: .quad 0
 last_linum: .quad 0
