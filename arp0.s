@@ -19,21 +19,21 @@ _start:
 
 	main_loop:
 	call skip_ws
-	xor %rsi, %rsi
-	call nextch
-	call skip_ws
 
-	movb prev_char(%rip), %al
+	movb this_char(%rip), %al
 	cmpb $3, %al # EOT
 	je main_end
 
-	mov ip(%rip), %rax
-	mov %rax, form_ptr(%rip)
+	xor %rsi, %rsi
+	call nextch
+
 	movb form(%rip), %al
 	call expect
 	jmp main_loop
 
 	main_end:
+	call make_quit
+
 	call make_header
 	call make_footer
 
@@ -59,6 +59,19 @@ _start:
 
 	xor %rdi, %rdi # all good, code 0
 	call quit
+
+make_quit:
+	# insert exit(0) at end of program
+	# xor %rdi, %rdi
+	# mov $60, %rax
+	# syscall
+	lea program(%rip), %rax
+	addq ip(%rip), %rax
+	movl $0x48ff3148, (%rax)
+	movl $0x003cc0c7, 4(%rax)
+	movl $0x050f0000, 8(%rax)
+	addq $12, ip(%rip)
+	ret
 
 expect:
 	push %rax
@@ -534,10 +547,6 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	test %rax, %rax
 	jnz ef_unrecognized
 
-	# Do processing for fn call here
-	#movsx accept_lgt(%rip), %edx
-	#lea accept_buff(%rip), %rsi
-	#call println # stub
 	jmp ef_call
 
 	ef_def: # handle 'define' special form
@@ -621,7 +630,6 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 	ef_call:
 		push %rsi # Save function's address for the call at the end
-		lea reg_shuffle_codes(%rip), %rdx
 		mov $8, %cl
 		mov ip(%rip), %rax
 		mov %rax, prev_ip(%rip)
@@ -669,6 +677,11 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		loop ef_loop
 
 	ef_postloop:
+	mov ip(%rip), %r8
+	mov %r8, prev_ip(%rip)
+	lea program(%rip), %r8
+	add ip(%rip), %r8
+
 	cmp $7, %rcx # i.e. 1 arg
 	jnz ef_dopost # in that case, don't generate code as the ret is already on %rax. Oherwise, go.
 	
@@ -681,14 +694,20 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	push %rbx # otherwise, put it back since it's a literal
 
 	ef_dopost:
+	mov form_ptr(%rip), %rax # if it's 0, this has not been set yet.
+	test %rax, %rax # if it's not 0, the entry point is already set, just skip.
+	jnz ef_no_point
+
+	lea program(%rip), %rax
+	mov %r8, %r9
+	sub %rax, %r9
+	mov %r9, form_ptr(%rip)
+
+	ef_no_point:
 	mov %rcx, %rdx # offset from code tables is as much as leftover count
 	mov $8, %rax
 	sub %cl, %al
 	mov %al, %cl # counter
-	mov ip(%rip), %r8
-	mov %r8, prev_ip(%rip)
-	lea program(%rip), %r8
-	add ip(%rip), %r8
 	lea reg_imm_codes(%rip), %r13
 	lea reg_shuffle_codes(%rip), %r14
 
@@ -702,6 +721,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movw (%r13,%rdx,2), %ax
 		mov %ax, (%r8)
 		movq %rsi, 2(%r8)
+		addq $0x601000, 2(%r8) # start of data address
 		add $10, %r8
 		jmp ef_arg_processed
 
@@ -720,19 +740,20 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		loop ef_loop2
 
 	ef_gencall:
-		movb $0xe8, (%r8)
+		movb $0xe8, (%r8) # call
+		add $1, %r8
 		pop %r12 # the function
 		mov %r8, %r9
+		addq $4, %r9
 		lea program(%rip), %r10
 		sub %r10, %r9
-		sub %r9, %r12 # address is relative, including 0xe8=call opcode's byte, so we need (%r12 - ip) - 8 from current ip, but we haven't added 8 to ip yet, thus
+		sub %r9, %r12 # address is relative from the END of the full callq opcode, so we +4 %r9 to account for the upcoming insertion of the jump address.
 		# (%r12 - ip=%r8) is enough.
-		movl %r12d, 1(%r8)
-		add $5, %r8
+		movl %r12d, (%r8)
+		add $4, %r8
 		lea program(%rip), %r9
 		sub %r9, %r8
-		sub ip(%rip), %r8
-		addq %r8, ip(%rip)
+		movq %r8, ip(%rip)
 
 	ef_end:
 		#sub $8, %rcx

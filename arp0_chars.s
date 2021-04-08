@@ -25,6 +25,7 @@ cc_white: .byte 1
 cc_num: .byte 2
 cc_char: .byte 3
 cc_symb: .byte 4
+cc_eot: .byte 255
 
 char_types:
 ct_none: .byte 0
@@ -40,7 +41,7 @@ char_class_tbl:
 .byte 0 #\SOH
 .byte 0 #\STX
 .byte 0 #\ETX
-.byte 0 #\EOT
+.byte 255 #\EOT
 .byte 0 #\ENQ
 .byte 0 #\ACK
 .byte 0 #\BEL

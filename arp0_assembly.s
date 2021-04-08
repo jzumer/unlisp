@@ -46,12 +46,12 @@ print_code_rel: # 'what' in %rax with format (quad)size, actual_str. For sys_wri
 last_code_rel:
 .space 65536, 0 # Enough space for the bootstrap program
 
+header_ptr: .quad 0
+footer_ptr: .quad 0
+
 .bss
 data:
 .space 65536, 0 # Enough space for the bootstrap data
 
 header: .space 1024
 footer: .space 1024
-
-header_ptr: .quad 0
-footer_ptr: .quad 0

@@ -41,9 +41,9 @@ nextch: # save the previous char, load the next char, fix linum/charnum based on
 	syscall
 	test %rax, %rax # 0 bytes read: EOF?
 	jne nextch_next
-	syscall # Do it again to check for next line...
-	test %rax, %rax # Still empty, probably real EOF
-	jne nextch_next
+	#syscall # Do it again to check for next line...
+	#test %rax, %rax # Still empty, probably real EOF
+	#jne nextch_next
 
 	movb $3, this_char(%rip) # 3 = end of text
 
