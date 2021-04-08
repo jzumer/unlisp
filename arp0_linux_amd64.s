@@ -51,15 +51,15 @@ nextch: # save the previous char, load the next char, fix linum/charnum based on
 	pop %rsi
 	incq charnum(%rip)
 
-	lea char_type_tbl(%rip), %ebx
-	movb prev_char(%rip), %al
-	xlatb
+	lea char_type_tbl(%rip), %rbx
+	movsx prev_char(%rip), %rax
+	movb (%rbx,%rax), %al
 
 	cmpb ct_nl(%rip), %al
 	jne ef_next
 
 	incq linum(%rip)
-	movq $-1, charnum(%rip)
+	movq $0, charnum(%rip)
 
 	xor %rsi, %rsi
 

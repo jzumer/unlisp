@@ -1,15 +1,11 @@
 # Special notes: due to endianness, movw 0xc0ff, * is the correct sequence for inc %rbx, not ffc0.
-.global ip
-.global prev_ip
-.global program
-
+# Note2: xlatb can't be used anymore because the addresses of the tables are too far down in the program...
 .global _start
+.global form_ptr
 
 .text
 
 _start:
-	call make_header
-
 	xor %rsi, %rsi
 	call nextch
 
@@ -31,18 +27,35 @@ _start:
 	cmpb $3, %al # EOT
 	je main_end
 
+	mov ip(%rip), %rax
+	mov %rax, form_ptr(%rip)
 	movb form(%rip), %al
 	call expect
 	jmp main_loop
 
 	main_end:
-	# XXX: copy data section into file first, saving data start somewhere
+	call make_header
 	call make_footer
+
+	movq header_ptr(%rip), %rdx
+	lea header(%rip), %rsi
+
+	call output # print out the header
 
 	movq ip(%rip), %rdx
 	lea program(%rip), %rsi
 
-	call output # print out the program
+	call output # print out the program segment
+
+	movq dp(%rip), %rdx
+	lea data(%rip), %rsi
+
+	call output # print out the data segment
+
+	movq footer_ptr(%rip), %rdx
+	lea footer(%rip), %rsi
+
+	call output # print out the footer
 
 	xor %rdi, %rdi # all good, code 0
 	call quit
@@ -79,9 +92,9 @@ accept:
 
 skip_ws:
 	sw_loop:
-		lea char_class_tbl(%rip), %ebx
-		movb this_char(%rip), %al
-		xlatb
+		lea char_class_tbl(%rip), %rbx
+		movsx this_char(%rip), %rax
+		movb (%rbx,%rax), %al
 		cmpb cc_white(%rip), %al
 		jne sw_done
 
@@ -93,11 +106,11 @@ skip_ws:
 	ret
 
 accept_string: # A string is squote-delimited. prevchar should be the string-quote (squote) character.
-	lea char_type_tbl(%rip), %ebx
-	movb prev_char(%rip), %al
-	xlatb
+	lea char_type_tbl(%rip), %rbx
+	movsx prev_char(%rip), %rax
+	movb (%rbx,%rax), %al
 
-	cmpb ct_squote, %al
+	cmpb ct_squote(%rip), %al
 	jne as_reject
 
 	xor %rcx, %rcx
@@ -111,16 +124,17 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		xor %rsi, %rsi
 		call nextch
 
-		lea char_class_tbl(%rip), %ebx
-		movb prev_char(%rip), %al
-		xlatb
+		lea char_class_tbl(%rip), %rbx
+		movsx prev_char(%rip), %rax
+		movb (%rbx,%rax), %al
 
 		cmpb cc_symb(%rip), %al
 		jne as_accept
 
-		lea char_type_tbl(%rip), %ebx
-		movb prev_char(%rip), %al
-		xlatb
+		lea char_type_tbl(%rip), %rbx
+		movsx prev_char(%rip), %rax
+		movb (%rbx,%rax), %al
+		
 
 		cmpb ct_squote(%rip), %al
 		je as_done
@@ -128,9 +142,10 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		cmpb ct_sesc(%rip), %al
 		jne as_accept
 
-		lea char_type_tbl(%rip), %ebx
-		movb this_char(%rip), %al
-		xlatb
+		lea char_type_tbl(%rip), %rbx
+		movsx this_char(%rip), %rax
+		movb (%rbx,%rax), %al
+
 		cmpb ct_sesc(%rip), %al
 		jne as_esc_squote
 
@@ -206,9 +221,9 @@ accept_int:
 	lea accept_buff(%rip), %r12
 	movb $0, accept_lgt(%rip)
 
-	lea char_class_tbl(%rip), %ebx
-	movb prev_char(%rip), %al
-	xlatb
+	lea char_class_tbl(%rip), %rbx
+	movsx prev_char(%rip), %rax
+	movb (%rbx,%rax), %al
 
 	cmpb cc_num(%rip), %al
 	jne ai_reject
@@ -217,9 +232,9 @@ accept_int:
 	ai_loop:
 		xor %rsi, %rsi
 		call nextch
-		lea char_class_tbl(%rip), %ebx
-		movb prev_char(%rip), %al
-		xlatb
+		lea char_class_tbl(%rip), %rbx
+		movsx prev_char(%rip), %rax
+		movb (%rbx,%rax), %al
 
 		cmpb cc_num(%rip), %al
 		je ai_accept
@@ -246,81 +261,20 @@ accept_int:
 		inc %rax
 		ret
 
-accept_float:
-	movb $0, float_lgt1(%rip)
-	movb $0, float_lgt2(%rip)
-
-	movsx int(%rip), %rax
-	call accept
-
-	test %rax, %rax
-	jne af_reject
-
-	movsx accept_lgt(%rip), %ecx
-	movb %cl, float_lgt1(%rip)
-	lea accept_buff(%rip), %rsi
-	lea float_buff1(%rip), %rdi
-	rep movsb
-
-	movb prev_char(%rip), %al
-	cmpb $'.', %al
-	jne af_reject
-
-	xor %rsi, %rsi
-	call nextch
-	movsx int(%rip), %rax
-	call accept
-
-	test %rax, %rax
-	jne af_reject
-
-	movb prev_char(%rip), %al
-	lea char_class_tbl(%rip), %ebx
-	xlatb
-
-	cmpb cc_char(%rip), %al
-	je af_reject
-
-	cmpb cc_symb(%rip), %al
-	jne af_accept # -> it's whitespace or control
-
-	movb prev_char(%rip), %al
-	lea char_type_tbl(%rip), %ebx
-	xlatb
-
-	cmpb ct_cpar(%rip), %al
-	jne af_reject
-
-	movsx accept_lgt(%rip), %ecx
-	movb %cl, float_lgt2(%rip)
-	lea accept_buff(%rip), %rsi
-	lea float_buff2(%rip), %rdi
-	rep movsb
-	#jmp af_accept
-
-	af_accept:
-		xor %rax, %rax
-		ret
-
-	af_reject:
-		xor %rax, %rax
-		inc %rax
-		ret
-
 accept_literal:
-	movb prev_char(%rip), %al
-	lea char_type_tbl(%rip), %ebx
-	xlatb
+	movsx prev_char(%rip), %rax
+	lea char_type_tbl(%rip), %rbx
+	movb (%rbx,%rax), %al
 
 	cmpb ct_squote(%rip), %al
 	je al_string
 
-	lea char_class_tbl(%rip), %ebx
-	movb prev_char(%rip), %al
-	xlatb
+	lea char_class_tbl(%rip), %rbx
+	movsx prev_char(%rip), %rax
+	movb (%rbx,%rax), %al
 
 	cmpb cc_num(%rip), %al
-	je al_int_or_float
+	je al_int
 
 	jmp al_reject
 
@@ -330,41 +284,51 @@ accept_literal:
 
 		# Copy string into program verbatim
 		movsx accept_lgt(%rip), %ecx
-		mov ip(%rip), %rax
-		mov %rax, prev_ip(%rip)
+		mov dp(%rip), %rax
+		mov %rax, prev_dp(%rip)
 		lea accept_buff(%rip), %rsi
-		lea program(%rip), %rdi
-		add ip(%rip), %rdi
+		lea data(%rip), %rdi
+		add dp(%rip), %rdi
 		mov %rcx, (%rdi)
 		add $8, %rdi # start after the str length
 		rep movsb
 
-		add accept_lgt(%rip), %rax
+		addb accept_lgt(%rip), %al
 		add $8, %rax
-		mov %rax, ip(%rip)
+		mov %rax, dp(%rip)
 
-		mov prev_ip(%rip), %rsi
+		mov prev_dp(%rip), %rsi
 		xor %rax, %rax
 		ret
 
-	al_int_or_float:
-		movsx float(%rip), %rax
-		call accept
-
-		test %rax, %rax
-		je al_float
-
-		movsx float_lgt1(%rip), %rax
-		test %rax, %rax
-		je al_reject
-		jmp al_int
-
-	al_float:
-		# TODO: do a thing  with the float in the float_buffs
-		jmp al_accept
-
 	al_int:
-		# TODO: do a thing with the int in the accept_buff
+		movsx int(%rip), %rax
+		call expect
+
+		movsx accept_lgt(%rip), %ecx
+		lea accept_buff(%rip), %rsi
+		xor %rbx, %rbx
+		xor %rdx, %rdx
+
+		al_ins_int:
+			movsx (%rsi), %ebx
+			sub $'0', %bl
+			mulq ten(%rip)
+			add %rbx, %rax
+			inc %rsi
+			loop al_ins_int
+
+		mov dp(%rip), %rbx
+		mov %rbx, prev_dp(%rip)
+		mov %rbx, %rcx
+		lea data(%rip), %rbx
+		add %rcx, %rbx
+		movq %rax, (%rbx)
+		add $8, %rbx
+		sub data(%rip), %rbx
+		mov %rbx, dp(%rip)
+		mov prev_dp(%rip), %rsi
+
 		jmp al_accept
 
 	al_reject:
@@ -386,9 +350,9 @@ accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd
 	dec %cl # max 255 chars
 
 	ae_loop:
-		lea char_class_tbl(%rip), %ebx
-		movb prev_char(%rip), %al
-		xlatb
+		lea char_class_tbl(%rip), %rbx
+		movsx prev_char(%rip), %rax
+		movb (%rbx,%rax), %al
 
 		cmpb cc_char(%rip), %al
 		je ae_accept
@@ -405,11 +369,11 @@ accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd
 		jmp ae_reject
 
 		ae_checksymbs:
-			lea char_type_tbl(%rip), %ebx
-			mov prev_char(%rip), %al
-			xlatb
+			lea char_type_tbl(%rip), %rbx
+			movsx prev_char(%rip), %rax
+			movb (%rbx,%rax), %al
 
-			cmpb ct_none, %al
+			cmpb ct_none(%rip), %al
 			je ae_accept
 			#jmp ae_reject
 
@@ -422,12 +386,16 @@ accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd
 		ae_accept:
 			mov prev_char(%rip), %r14
 			movb %r14b, (%r13)
-			xor %r14, %r14
 			inc %r13
 			inc %r12
 			push %rcx
+			push %r12
+			push %r13
 			xor %rsi, %rsi
 			call nextch
+			xor %r14, %r14
+			pop %r13
+			pop %r12
 			pop %rcx
 			loop ae_loop
 		
@@ -442,26 +410,30 @@ accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd
 		ret
 
 accept_atom:
-	movb prev_char(%rip), %al
+	movsx prev_char(%rip), %rax
 	lea char_class_tbl(%rip), %ebx
-	xlatb
+	movb (%rbx,%rax), %al
 
 	cmpb cc_char(%rip), %al
 	je aa_var
 
 	movsx literal(%rip), %rax
 	call accept
+	xor %rbx, %rbx
+	inc %rbx
 	ret
 
 	aa_var:
 		movsx var(%rip), %rax
 		call accept
+		xor %rbx, %rbx
+		inc %rbx
 		ret
 
 accept_expr:
-	movb prev_char(%rip), %al
+	movsx prev_char(%rip), %rax
 	lea char_type_tbl(%rip), %ebx
-	xlatb
+	movb (%rbx,%rax), %al
 
 	xor %rbx, %rbx
 
@@ -493,7 +465,7 @@ find_symbol: # Returns matched code address on %rsi, %rax is error code
 		lea (%rdx,%rdx,2), %rcx # 3 %rdx
 		lea (%rdi,%rcx,8), %rcx # %rdi + 8*(3*%rdx) = %rdi + 24*%rdx
 		#lea 0(%rdi), %rdi # [key] is first; no offset
-		mov 8(%rdi), %rbx # [length]
+		movq 8(%rdi), %rbx # [length]
 		movsx accept_lgt(%rip), %ecx
 		cmp %rbx, %rcx
 		jne fs_cl_tail
@@ -513,7 +485,7 @@ find_symbol: # Returns matched code address on %rsi, %rax is error code
 
 	fs_done_cl:
 	#mov 16(%r12), %rsi
-	mov %r12, %rsi
+	mov (%r12), %rsi
 	pop %rcx
 	fs_after_cl:
 	test %rcx, %rcx
@@ -529,9 +501,9 @@ find_symbol: # Returns matched code address on %rsi, %rax is error code
 		ret
 
 accept_form: # A form is a non-empty s-expression whose head is either a special-form (define) or a variable.
-	lea char_type_tbl(%rip), %ebx
-	movb prev_char(%rip), %al
-	xlatb
+	lea char_type_tbl(%rip), %rbx
+	movsx prev_char(%rip), %rax
+	movb (%rbx,%rax), %al
 
 	cmpb ct_opar(%rip), %al
 	jne ef_incomplete
@@ -543,13 +515,13 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	xor %rax, %rax
 	movb var(%rip), %al
 	call accept
-	dec %rax # check for code 1 to avoid 0 (good) or 2 (var exists and is unbound)
+	dec %rax # check for code 1 as opposed to 0 (good) or 2 (var exists and is unbound -- good)
 	test %rax, %rax
 	je ef_incomplete
 
 	cld
 	movsx accept_lgt(%rip), %ecx
-	mov $define_str_lgt, %rdx
+	mov define_str_lgt(%rip), %rdx
 	cmp %rcx, %rdx
 	jne ef_nodef
 	lea accept_buff(%rip), %rsi
@@ -622,13 +594,13 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		test %rax, %rax
 		jne ef_incomplete
-		mov prev_ip(%rip), %rsi
+		mov prev_dp(%rip), %rsi
 		pop %rdi
 		mov %rsi, 16(%rdi)
 
-		lea char_type_tbl(%rip), %ebx
-		movb prev_char(%rip), %al
-		xlatb
+		lea char_type_tbl(%rip), %rbx
+		movsx prev_char(%rip), %rax
+		movb (%rbx,%rax), %al
 
 		cmpb ct_cpar(%rip), %al
 		je ef_def_done
@@ -636,9 +608,9 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		call skip_ws
 		xor %rsi, %rsi
 		call nextch
-		lea char_type_tbl(%rip), %ebx
-		movb prev_char(%rip), %al
-		xlatb
+		lea char_type_tbl(%rip), %rbx
+		movsx prev_char(%rip), %rax
+		movb (%rbx,%rax), %al
 
 		cmpb ct_cpar(%rip), %al
 		jne ef_incomplete
@@ -646,8 +618,6 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		ef_def_done:
 		xor %rax, %rax
 		ret
-
-		#call println # stub
 
 	ef_call:
 		push %rsi # Save function's address for the call at the end
@@ -659,9 +629,9 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		add ip(%rip), %rax
 
 	ef_loop:
-		lea char_type_tbl(%rip), %ebx
-		movb prev_char(%rip), %al
-		xlatb
+		lea char_type_tbl(%rip), %rbx
+		movsx prev_char(%rip), %rax
+		movb (%rbx,%rax), %al
 
 		cmpb ct_cpar(%rip), %al
 		je ef_postloop
@@ -672,9 +642,9 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		xor %rsi, %rsi
 		call nextch
 		pop %rcx
-		lea char_type_tbl(%rip), %ebx
-		movb prev_char(%rip), %al
-		xlatb
+		lea char_type_tbl(%rip), %rbx
+		movsx prev_char(%rip), %rax
+		movb (%rbx,%rax), %al
 
 		cmpb ct_cpar(%rip), %al
 		je ef_postloop
@@ -691,13 +661,11 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		jmp ef_incomplete
 
 		ef_cont:
-		#lea accept_buff(%rip), %rsi
-		#movb accept_lgt(%rip), %dl
-		#call println
+		pop %rcx # pop cnt
+
 		push %rsi
 		push %rbx
 
-		pop %rcx # pop cnt
 		loop ef_loop
 
 	ef_postloop:
@@ -714,7 +682,9 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 	ef_dopost:
 	mov %rcx, %rdx # offset from code tables is as much as leftover count
-	sub $8, %cl # counter
+	mov $8, %rax
+	sub %cl, %al
+	mov %al, %cl # counter
 	mov ip(%rip), %r8
 	mov %r8, prev_ip(%rip)
 	lea program(%rip), %r8
@@ -726,7 +696,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		pop %rbx
 		pop %rsi
 		test %rbx, %rbx
-		jz ef_arg_was_call
+		jz ef_arg_not_lit
 
 		# insert literal mov
 		movw (%r13,%rdx,2), %ax
@@ -735,7 +705,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		add $10, %r8
 		jmp ef_arg_processed
 
-		ef_arg_was_call:
+		ef_arg_not_lit:
 		# insert mov %rax, this_reg [rdx = mov code, 3 bytes each]
 		lea (%r14,%rdx,2), %rdi
 		lea (%rdi,%rdx), %rdi
@@ -752,11 +722,17 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	ef_gencall:
 		movb $0xe8, (%r8)
 		pop %r12 # the function
-		sub %r8, %r12 # address is relative, including 0xe8=call opcode's byte, so we need (%r12 - ip) - 8 from current ip, but we haven't added 8 to ip yet, thus
+		mov %r8, %r9
+		lea program(%rip), %r10
+		sub %r10, %r9
+		sub %r9, %r12 # address is relative, including 0xe8=call opcode's byte, so we need (%r12 - ip) - 8 from current ip, but we haven't added 8 to ip yet, thus
 		# (%r12 - ip=%r8) is enough.
 		movl %r12d, 1(%r8)
-		add $6, %r8
-		mov %r8, ip(%rip)
+		add $5, %r8
+		lea program(%rip), %r9
+		sub %r9, %r8
+		sub ip(%rip), %r8
+		addq %r8, ip(%rip)
 
 	ef_end:
 		#sub $8, %rcx
@@ -767,11 +743,13 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	ef_incomplete:
 		xor %rax, %rax
 		inc %rax
-		jmp ef_ret
+		# Stack may be borked, it's too complicated to unwind so just bail directly
+		jmp expect_error
 
 	ef_unrecognized:
-		xor %rax, %rax
-		add $2, %rax
+		mov $2, %rax
+		# As above
+		jmp expect_error
 		#jmp ef_ret
 
 	ef_ret:
@@ -827,48 +805,6 @@ err_malloc_failed:
 	dec %rdi
 	call quit
 
-newline_code:
-print_code: # %rax is the in-program address of the string
-	lea program(%rip), %rbx
-	mov %rbx, %rdx
-	add %rbx, %rax # rax is now a valid ptr
-	movq ip(%rip), %rcx
-	add %rcx, %rbx
-	movq %rcx, prev_ip(%rip)
-
-	movb $0x48, (%rbx) # REX.W
-	movb $0xba, 1(%rbx) # mov immediate 64b to %rdx
-	movq (%rax), %rcx
-	movq %rcx, 2(%rbx) # value of str length
-	add $8, %rax # %rax is now proper address of string
-	sub %rdx, %rax # now back to program-relative
-	add $10, %rbx
-	movb $0x48, (%rbx)
-	movb $0xbe, 1(%rbx) # mov immediate 64b to %rsi
-	movq %rax, 2(%rbx) # address of the string input
-	add $10, %rbx
-	movb $0x48, (%rbx)
-	movw $0xc031, 1(%rbx) # xor %rbx, %rbx
-	add $3, %rbx
-	movb $0x48, (%rbx)
-	movw $0xc0ff, 1(%rbx) # inc %rbx
-	add $3, %rbx
-	movb $0x48, (%rbx)
-	movw $0xff31, 1(%rbx) # xor %rdi, %rdi
-	add $3, %rbx
-	movb $0x48, (%rbx) 
-	movw $0xc7ff, 1(%rbx) # inc %rdi = stdout
-	add $3, %rbx
-	movw $0x050f, (%rbx) # syscall
-	add $2, %rbx
-
-	lea program(%rip), %rcx
-	sub %rcx, %rbx
-	movq %rbx, ip(%rip)
-	xor %rax, %rax
-
-	ret
-
 NULL_CODE:
 	ret
 
@@ -878,10 +814,9 @@ form: .byte 0
 var: .byte 1
 string: .byte 2
 int: .byte 3
-float: .byte 4
-literal: .byte 5
-atom: .byte 6
-expr: .byte 7
+literal: .byte 4
+atom: .byte 5
+expr: .byte 6
 
 noaccept_error: .ascii "Compiler error -- no accept function for current token."
 noaccept_error_lgt = . - noaccept_error
@@ -891,7 +826,6 @@ accept_tbl:
 .quad accept_var
 .quad accept_string
 .quad accept_int
-.quad accept_float
 .quad accept_literal
 .quad accept_atom
 .quad accept_expr
@@ -907,8 +841,6 @@ malformed_string_error: .ascii "Malformed 'string'"
 malformed_string_error_lgt = . - malformed_string_error
 bad_int_error: .ascii "Bad 'integer'"
 bad_int_error_lgt = . - bad_int_error
-bad_float_error: .ascii "Bad 'float'"
-bad_float_error_lgt = . - bad_float_error
 expect_literal_error: .ascii "Missing 'literal' expected"
 expect_literal_error_lgt = . - expect_literal_error
 expect_atom_error: .ascii "Missing 'atom' expected"
@@ -918,14 +850,13 @@ expect_expr_error_lgt = . - expect_expr_error
 unrecognized_error: .ascii "Unrecognized input"
 unrecognized_error_lgt = . - unrecognized_error
 
-unrec_err_code: .byte 8
+unrec_err_code: .byte 7
 
 expect_error_tbl:
 .quad expect_form_error
 .quad expect_var_error
 .quad malformed_string_error
 .quad bad_int_error
-.quad bad_float_error
 .quad expect_literal_error
 .quad expect_atom_error
 .quad expect_expr_error
@@ -936,7 +867,6 @@ expect_error_lgt_tbl:
 .quad expect_var_error_lgt
 .quad malformed_string_error_lgt
 .quad bad_int_error_lgt
-.quad bad_float_error_lgt
 .quad expect_literal_error_lgt
 .quad expect_atom_error_lgt
 .quad expect_expr_error_lgt
@@ -945,46 +875,12 @@ expect_error_lgt_tbl:
 accept_buff: .space 256, 0
 accept_lgt: .byte 0
 
-# Buffers for float decoding (int part, then decimal part)
-float_buff1: .space 20, 0
-float_lgt1: .byte 0
-float_buff2: .space 20, 0
-float_lgt2: .byte 0
-
-define_str: .ascii "define"
-define_str_lgt = . - define_str
-print_str: .ascii "print"
-print_str_lgt = . - print_str
-newline_str: .ascii "newline"
-newline_str_lgt = . - newline_str
-SYMBOL_TBL_END: .ascii "\0"
-
 comma_space: .ascii ", "
 colon_space: .ascii ": "
 
-prev_ip: .quad 0 # instruction pointer starting at previous insertion point
-ip: .quad last_code_rel - program # instruction pointer at the end of previous insertion
+form_ptr: .quad 0 # ip at the time the last form is evaluated, i.e. entry-point
 
-n_symbols: .quad 3
-
-symbol_tbl:
-.quad print_str, print_str_lgt, print_code_rel - program
-.quad newline_str, newline_str_lgt, 0
-.space 65536, 0
-.quad SYMBOL_TBL_END, 0, NULL_CODE
-
-program:
-print_code_rel: # 'what' in %rax with format (quad)size, actual_str. For sys_write, 'what' is in %rsi and 'how much' in %rdx.
-.byte 0x48, 0x8b, 0x10 # mov (%rax), %rdx
-.byte 0x48, 0x8d, 0x70, 0x08 # lea 8(%rax), %rsi
-.byte 0x48, 0x31, 0xc0 # xor %rax, %rax
-.byte 0x48, 0xff, 0xc0 # inc %rax -> sys_write
-.byte 0x48, 0x31, 0xff # xor %rdi, %rdi
-.byte 0x48, 0xff, 0xc7 # inc %rdi -> stdout
-.byte 0x0f, 0x05 # syscall
-.byte 0xc3 # ret
-last_code_rel:
-.space 65536, 0 # Enough space for the bootstrap program
+n_symbols: .quad 1
 
 reg_shuffle_codes:
 .byte 0b01001001, 0b10001001, 0b11000001 # rax -> r9
@@ -1008,3 +904,5 @@ reg_imm_codes: # load this, then append literal val
 
 last_charnum: .quad 0
 last_linum: .quad 0
+
+ten: .quad 10
