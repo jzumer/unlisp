@@ -27,7 +27,7 @@ ip: .quad last_code_rel - program # instruction pointer at the end of previous i
 prev_dp: .quad 0 # data pointer starting at previous insertion point
 dp: .quad 0 # current data pointer
 
-define_str: .ascii "define"
+define_str: .ascii "def"
 define_str_lgt: .quad . - define_str
 print_str: .ascii "print"
 print_str_lgt: .quad . - print_str
