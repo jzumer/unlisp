@@ -36,6 +36,7 @@ _start:
 
 	call make_header
 	call make_footer
+	call make_relocations
 
 	movq header_ptr(%rip), %rdx
 	lea header(%rip), %rsi
@@ -710,6 +711,8 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	mov %al, %cl # counter
 	lea reg_imm_codes(%rip), %r13
 	lea reg_shuffle_codes(%rip), %r14
+	lea reloc(%rip), %r9
+	add reloc_ptr(%rip), %r9
 
 	ef_loop2:
 		pop %rbx
@@ -721,7 +724,10 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movw (%r13,%rdx,2), %ax
 		mov %ax, (%r8)
 		movq %rsi, 2(%r8)
-		addq $0x601000, 2(%r8) # start of data address
+		#addq $0x601000, 2(%r8) # start of data address
+		lea 2(%r8), %r10
+		mov %r10, (%r9)
+		add $8, %r9
 		add $10, %r8
 		jmp ef_arg_processed
 
@@ -740,6 +746,11 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		loop ef_loop2
 
 	ef_gencall:
+		# save reloc_ptr first
+		lea reloc(%rip), %r10
+		sub %r10, %r9
+		mov %r9, reloc_ptr(%rip)
+
 		movb $0xe8, (%r8) # call
 		add $1, %r8
 		pop %r12 # the function

@@ -9,6 +9,9 @@
 .global dp
 .global prev_dp
 
+.global reloc
+.global reloc_ptr
+
 .global symbol_tbl
 
 .global define_str
@@ -49,9 +52,13 @@ last_code_rel:
 header_ptr: .quad 0
 footer_ptr: .quad 0
 
+reloc_ptr: .quad 0
+
 .bss
 data:
 .space 65536, 0 # Enough space for the bootstrap data
 
 header: .space 1024
 footer: .space 1024
+
+reloc: .space 65536

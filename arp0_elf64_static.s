@@ -1,5 +1,6 @@
 .global make_header
 .global make_footer
+.global make_relocations
 
 .text
 
@@ -28,9 +29,8 @@ make_header:
 	movl $1, (%rax) # always 1
 	add $4, %rax
 	#movq $0xB0, %rbx
-	movq $0x400000, %rbx
+	movq $0x4000b0, %rbx
 	addq form_ptr(%rip), %rbx
-	addq $0xb0, %rbx
 	#movq $0x0, %rbx
 	#addq form_ptr(%rip), %rbx #  + last function = entry point, good or bad? probably bad, XXX
 	movq %rbx, (%rax) # This is he entry point -- 0x40 + 0x38 * 2 p_headers = 0xB0
@@ -71,6 +71,7 @@ make_header:
 	movq $0x400000, 8(%rax) # physical memory -- basically ignored
 	add $16, %rax
 	movq ip(%rip), %rbx
+	addq $0xb0, %rbx
 	movq %rbx, (%rax) # size of segment on disk
 	movq %rbx, 8(%rax) # size of segement in ram (same as above in practice)
 	add $16, %rax
@@ -82,15 +83,14 @@ make_header:
 	add $4, %rax
 	movl $6, (%rax) # PF_W | PF_R i.e. .data
 	add $4, %rax
-	#movq $0xb0, %rbx
+	movq $0xb0, %rbx
 	#movq $0x00, %rbx
-	movq $0x1000, %rbx
-	#addq ip(%rip), %rbx
+	addq ip(%rip), %rbx
 	movq %rbx, (%rax) # offset: same as previous header, but add size of .text as well
 	add $8, %rax
-	#movq ip(%rip), %rbx
-	movq $0x601000, %rbx
-	movq %rbx, (%rax) # XXX add size of .text
+	movq $0x6000b0, %rbx
+	addq ip(%rip), %rbx
+	movq %rbx, (%rax) # vmem
 	movq %rbx, 8(%rax) # physical memory -- basically ignored
 	add $16, %rax
 	movq dp(%rip), %rbx
@@ -170,8 +170,8 @@ make_footer:
 	add $8, %rax
 	movq $3, (%rax) # ALLOC | WRITE
 	add $8, %rax
-	#movq ip(%rip), %rbx
-	movq $0x601000, %rbx
+	movq $0x6000b0, %rbx
+	addq ip(%rip), %rbx
 	movq %rbx, (%rax) # vaddr start
 	movq $0xb0, %rbx
 	addq ip(%rip), %rbx
@@ -214,6 +214,26 @@ make_footer:
 	sub %rbx, %rax
 	movq %rax, footer_ptr(%rip)
 
+	ret
+
+make_relocations: # although we generate a static executable (not relocatable), we have to do manual relocs since data alignment classically depends
+	# on code size (and in our case isn't even aligned).
+	lea reloc(%rip), %rax
+	mov %rax, %rdx
+	addq reloc_ptr(%rip), %rdx
+
+	reloc_loop:
+	cmp %rax,%rdx
+	je reloc_end
+
+	mov (%rax), %rbx
+	movq $0x6000b0, %rcx
+	addq ip(%rip), %rcx
+	addq %rcx, (%rbx)
+	add $8, %rax
+	jmp reloc_loop
+
+	reloc_end:
 	ret
 
 .data
