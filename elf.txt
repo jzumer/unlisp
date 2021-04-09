@@ -1,0 +1,38 @@
+I have found the resources available about the ELF format to be lacking or
+worse, misleading. I have collected some notes about how to properly form an
+ELF binary in this document.
+
+==
+
+The first entry of the section headers MUST be null (and use a shstrtab empty
+string as name?), otherwise the headers will not be read, despite all the
+information being available in the file header for proper reading.
+
+On the other hand, program headers do NOT need the null header entry
+(according to my research, this is supposed to change depending on platform,
+though I have no evidence this is true).
+
+Offset fields are explained with different terms depending on source (or even
+in the same source): "offset in image", "offset in file", "offset in file
+image", even "offset into which to load"... Actually, all offsets are file
+offsets regardless, and the aforementioned "offset into which to load" is
+simply wrong and does not exist.
+
+It appears that the file header and program headers must be included in the
+first segment of the program. This means the corresponding program header must
+be e.g. 0xb0 longer than the segment's actual size (0xb0 being the size of the file
+header plus two program headers, which is the layout for most programs on
+modern desktop platforms apparently) while starting with an offset of 0.
+
+Virtual addresses are not semi-arbitrary: they do NOT appear to indicate where
+a segment will be mapped in memory, but rather where the entire file will be
+mapped into memory for the sake of a specific segment. For example, if we have
+.text and .data in this order, both sections have alignment 0x200000 and .text
+starts at 0x400000 (and includes the file and program headers), then .data
+CANNOT start at 0x600000: it must instead start at 0x600000 + 0xb0 = headers
+size + program size. Failure to do so causes a pre-startup crash due to the
+platform ELF loader complaining.
+
+While section headers are optional when creating an executable, having
+incorrect section headers when they are actually present will cause a
+pre-startup crash due to the platform ELF loader.

@@ -149,7 +149,6 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		movsx prev_char(%rip), %rax
 		movb (%rbx,%rax), %al
 		
-
 		cmpb ct_squote(%rip), %al
 		je as_done
 
@@ -205,8 +204,6 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		movb $'\0', prev_char(%rip)
 		jmp as_accept
 
-		jmp as_reject
-
 		as_accept:
 			movb prev_char(%rip), %al
 			movb %al, (%r12)
@@ -215,8 +212,7 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 			pop %rcx
 			dec %rcx
 			test %rcx, %rcx
-			je as_reject
-			jmp as_loop
+			jne as_loop
 
 	as_reject:
 		xor %rax, %rax
@@ -425,7 +421,7 @@ accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd
 
 accept_atom:
 	movsx prev_char(%rip), %rax
-	lea char_class_tbl(%rip), %ebx
+	lea char_class_tbl(%rip), %rbx
 	movb (%rbx,%rax), %al
 
 	cmpb cc_char(%rip), %al
@@ -446,7 +442,7 @@ accept_atom:
 
 accept_expr:
 	movsx prev_char(%rip), %rax
-	lea char_type_tbl(%rip), %ebx
+	lea char_type_tbl(%rip), %rbx
 	movb (%rbx,%rax), %al
 
 	xor %rbx, %rbx
@@ -477,7 +473,7 @@ find_symbol: # Returns matched code address on %rsi, %rax is error code
 		push %rcx
 		lea symbol_tbl(%rip), %rdi # Load symbol table
 		lea (%rdx,%rdx,2), %rcx # 3 %rdx
-		lea (%rdi,%rcx,8), %rcx # %rdi + 8*(3*%rdx) = %rdi + 24*%rdx
+		lea (%rdi,%rcx,8), %rdi # %rdi + 8*(3*%rdx) = %rdi + 24*%rdx
 		#lea 0(%rdi), %rdi # [key] is first; no offset
 		movq 8(%rdi), %rbx # [length]
 		movsx accept_lgt(%rip), %ecx
@@ -567,6 +563,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		mov n_symbols(%rip), %r12
 		inc %r12
 		mov %r12, n_symbols(%rip)
+		dec %r12
 
 		movsx accept_lgt(%rip), %ecx
 		push %rcx
@@ -591,6 +588,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		lea (%r12,%r12,2), %r12
 		lea (%rdi,%r12,8), %rdi
 		push %rdi # Save it for when we generate the code (it shall be put in 16(%rdi))
+		movsx accept_lgt(%rip), %rcx
 		movq %rcx, 8(%rdi)
 		# save str ptr in symbol_tbl
 		movq %r13, (%rdi)
@@ -661,7 +659,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		push %rcx
 		xor %rax, %rax
 		movsx expr(%rip), %rax
-		call accept
+brk:		call accept
 
 		test %rax, %rax # success
 		je ef_cont
