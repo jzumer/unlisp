@@ -30,7 +30,7 @@ make_header:
 	add $4, %rax
 	#movq $0xB0, %rbx
 	movq $0x4000b0, %rbx
-	addq form_ptr(%rip), %rbx
+	#addq form_ptr(%rip), %rbx
 	#movq $0x0, %rbx
 	#addq form_ptr(%rip), %rbx #  + last function = entry point, good or bad? probably bad, XXX
 	movq %rbx, (%rax) # This is he entry point -- 0x40 + 0x38 * 2 p_headers = 0xB0
@@ -226,11 +226,23 @@ make_relocations: # although we generate a static executable (not relocatable), 
 	cmp %rax,%rdx
 	je reloc_end
 
-	mov (%rax), %rbx
+	mov (%rax), %rcx
+	mov 8(%rax), %rbx
+	test %rcx, %rcx # 0 = 32-bit, 1 = 64-bit reloc
+	je reloc_32
+
 	movq $0x6000b0, %rcx
 	addq ip(%rip), %rcx
 	addq %rcx, (%rbx)
-	add $8, %rax
+	jmp reloc_next
+
+	reloc_32:
+	movl $0x6000b0, %ecx
+	addl ip(%rip), %ecx
+	addq %rcx, (%rbx)
+
+	reloc_next:
+	add $16, %rax
 	jmp reloc_loop
 
 	reloc_end:
