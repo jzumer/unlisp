@@ -528,7 +528,7 @@ find_symbol: # Returns matched code address on %rsi, %rax is error code
 
 find_env: # Like find_symbol but on the environment, all the way to the root.
 	# matched register is on %rsi, %rdi is %rsp-relative offset, %rax is error code.
-	mov current_env(%rip), %rcx
+	mov curr_env(%rip), %rcx
 	xor %r12, %r12 # %rsp offset (-1 = already in register, otherwise offset(%rsp))
 	dec %r12
 	xor %r13, %r13 # how many vars we have passed in this env
@@ -571,7 +571,7 @@ find_env: # Like find_symbol but on the environment, all the way to the root.
 			mov %r13, %r12
 			jmp fe_real_next_env
 
-			ef_env_next_env:
+			fe_env_next_env:
 			add %r13, %r12
 
 			fe_real_next_env:
@@ -580,6 +580,8 @@ find_env: # Like find_symbol but on the environment, all the way to the root.
 			jmp fe_callloop
 
 	fe_done_cl:
+		#xor %rdi, %rdi
+		#sub %r12, %rdi
 		mov %r12, %rdi
 		movq 16(%rcx), %rsi
 
@@ -617,7 +619,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	je ef_incomplete
 
 	test %rbx, %rbx # 0 = form, 1 = otherwise (assume var)
-	je ef_call
+	je ef_incomplete # XXX: not yet accepted (basically just need to move ret to r10 and call or similar)
 
 	cld
 	movsx accept_lgt(%rip), %ecx
@@ -802,7 +804,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		# Teardown env; note that this leaks the string we had allocated...
 		movq 0x80(%rsp), %rax
-		movq %rax, current_env(%rip)
+		movq %rax, curr_env(%rip)
 		add $0x88, %rsp
 
 		mov ip(%rip), %rax
@@ -937,7 +939,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		jz ef_redef # symbol exist so it's being redefined
 
 		cmp $2, %rax # symbol does not exist, so a new one is being defined (this is OK, too)
-		jnz ef_incomplete # a different error code is present, no good!
+		jne ef_incomplete # a different error code is present, no good!
 
 		ef_redef:
 		mov n_symbols(%rip), %r12
@@ -982,6 +984,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		test %rax, %rax
 		jne ef_incomplete
+
 		mov prev_dp(%rip), %rsi
 		pop %rdi
 		mov %rsi, 16(%rdi)
@@ -1010,57 +1013,58 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 	ef_call:
 		# Potential TODO: accept functions in lambdas by this mechanism
-		#cmp $2, %rbx # 2 = this was a lambda arg; 1 = this was a var; 0 = this was a call
-		#jne ef_call_noreg
+		# This is only reached right after a find_symbol
 
-		#push %rsi # Save function's address for the call at the end
-		#push %rdi # rsp offset instead of reg in rsi
-		#pushq $1 # regs
-
-		ef_call_noreg:
-		mov $8, %cl
 		mov ip(%rip), %rax
 		mov %rax, prev_ip(%rip)
 		lea program(%rip), %rax
 		add ip(%rip), %rax
 
-		lea data(%rip), %rsi # a function is represented in data as [n_args, address]
-		add dp(%rip), %rsi
+		lea data(%rip), %rdi # a function is represented in data as [n_args, address]
+		add %rdi, %rsi
 
-		xor %rdi, %rdi
-		movb $8, %dil
-		subb (%rsi), %dil
-		push %rdi # save it for pops
+		mov (%rsi), %rdi
+		pushq 8(%rsi) # function address
+		pushq %rdi # arg count
+		pushq %rdi # arg count that will be used as counter
 
 		lea reg_codes(%rip), %rbx
 
+		mov $8, %rcx
+		sub %rdi, %rcx
+		mov %rcx, %rdi
 		xor %rcx, %rcx
 
 		ef_pushloop:
-			test %dil, %dil
-			je ef_loop
-			lea -6(%rdi), %rdx
-			jns ef_push_rex
+			cmpb $8, %dil
+			je ef_pre_loop
+			cmp $2, %rdi
+			jb ef_push_rex
 
 			movb $0x50, (%rax) # push
-			movb (%rbx,%rdi), %cl
+			movb -1(%rbx,%rdi), %cl # index is off by one since 1 arg = option 0
 			addb %cl, (%rax) # register
 			inc %rax
 			jmp ef_end_pushloop
 
 			ef_push_rex:
 			movb $0x41, (%rax)
-			movb $0x50, 1(%rax) # push + rex
-			lea rex_reg_codes(%rip), %rbx
-			movb (%rbx,%rdi), %cl
-			addb %cl, 1(%rax) # register
+			movb -1(%rbx,%rdi), %cl
+			addb $0x50, %cl
+			movb %cl, 1(%rax) # push+rex register
 			add $2, %rax
 
 			ef_end_pushloop:
-			decb %dil
+			incb %dil
 			jmp ef_pushloop
 
-	ef_loop:
+	# top of stack is the count
+	ef_pre_loop:
+		lea program(%rip), %rbx
+		sub %rbx, %rax
+		movq %rax, ip(%rip)
+
+		ef_loop:
 		lea char_type_tbl(%rip), %rbx
 		movsx prev_char(%rip), %rax
 		movb (%rbx,%rax), %al
@@ -1070,10 +1074,8 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		call skip_ws
 
-		push %rcx
 		xor %rsi, %rsi
 		call nextch
-		pop %rcx
 		lea char_type_tbl(%rip), %rbx
 		movsx prev_char(%rip), %rax
 		movb (%rbx,%rax), %al
@@ -1081,7 +1083,6 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		cmpb ct_cpar(%rip), %al
 		je ef_postloop
 
-		push %rcx
 		xor %rax, %rax
 		movsx expr(%rip), %rax
 		call accept
@@ -1093,71 +1094,55 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		jmp ef_incomplete
 
 		ef_cont:
-		pop %rcx # pop cnt
+		pop %rcx # running cnt
+		pop %rdx # total cnt
 
 		push %rsi
+		push %rdi
 		push %rbx
 
-		loop ef_loop
+		push %rdx
+		dec %rcx
+		push %rcx
+
+		jnz ef_loop
 
 	ef_postloop:
-	mov ip(%rip), %r8
-	mov %r8, prev_ip(%rip)
-	lea program(%rip), %r8
-	add ip(%rip), %r8
+	pop %rcx # decremented value in above loop, i.e. 0 -- drop
 
-	lea reg_codes(%rip), %rbx
-
-	xor %rcx, %rcx
-
-	ef_poploop:
-		test %dil, %dil
-		je ef_popdone
-		lea -6(%rdi), %rdx
-		jns ef_pop_rex
-
-		movb $0x58, (%rax) # pop
-		movb (%rbx,%rdi), %cl
-		addb %cl, (%rax) # register
-		inc %rax
-		jmp ef_end_poploop
-
-		ef_pop_rex:
-		movb $0x41, (%rax)
-		movb $0x58, 1(%rax) # pop + rex
-		lea rex_reg_codes(%rip), %rbx
-		movb (%rbx,%rdi), %cl
-		addb %cl, 1(%rax) # register
-		add $2, %rax
-
-		ef_end_poploop:
-		decb %dil
-		jmp ef_poploop
-
-	ef_popdone:
-	pop %rbx
-	pop %rsi
-	test %rbx, %rbx # = 0 if call, = 1 if literal.
-	jz ef_gencall
-
-	push %rsi
-	push %rbx # otherwise, put it back since it's a literal
+	mov (%rsp), %rax # arg count
+	mov $8, %rcx
+	sub %rax, %rcx
+	cmp $8, %rcx
+	je ef_gencall
 
 	ef_dopost:
-	mov %rcx, %rdx # offset from code tables is as much as leftover count
-	mov $8, %rax
-	sub %cl, %al
-	mov %al, %cl # counter
+	mov %rcx, %rdx
+	# offset from code tables is as much as "leftover" count
+	# i.e. inverted index
 	lea reg_imm_codes(%rip), %r13
 	lea reg_shuffle_codes(%rip), %r14
 	lea reloc(%rip), %r9
 	add reloc_ptr(%rip), %r9
 
+	lea program(%rip), %r8
+	add ip(%rip), %r8
+
 	ef_loop2:
+		pop %rax # cnt
+
 		pop %rbx
+		pop %rdi
 		pop %rsi
+
+		push %rax # cnt back on top
+
 		test %rbx, %rbx
-		jz ef_arg_not_lit
+		jz ef_arg_call
+
+		dec %rbx
+		test %rbx, %rbx
+		jnz ef_arg_env # if it's not 1 or 0, it must be an env arg from lambda
 
 		# insert literal mov
 		movw (%r13,%rdx,2), %ax
@@ -1170,7 +1155,36 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		add $10, %r8
 		jmp ef_arg_processed
 
-		ef_arg_not_lit: # then it was a call, and ret val is at 0 in data, so mov it to our reg
+		ef_arg_env:
+		# rdi = rsp offset
+		# rsi = register it came from (not used if rdi > -1)
+		inc %rdi
+		test %rdi, %rdi
+		jz ef_env_direct
+
+		# This was not directly in a reg, so emit mov (%rsp,[%rdi]), [%rcx->reg]
+		dec %rdi
+		lea reg_rsp_codes(%rip), %r10
+		movl (%r10,%rdx,4), %eax
+		movl %eax, (%r8)
+		movl %edi, 4(%r8)
+		addq $8, %r8
+
+		jmp ef_arg_processed
+
+		ef_env_direct:
+		# This was directly in a reg whose index is in %rsi, emit the mov
+		lea reg_reg_codes(%rip), %rax
+		lea (,%rsi,8), %rsi
+		lea (%rax,%rsi,4), %rsi
+		mov (%rsi,%rdx), %rax # address is reg_reg_codes + 24*rsi + rcx
+		movb %al, (%r8)
+		inc %rax
+		movw %ax, 1(%r8)
+		add $3, %r8
+		jmp ef_arg_processed
+
+		ef_arg_call: # then it was a call, and ret val is at 0 in data, so mov it to our reg
 		# mov 0x0 = ret mem addr, %reg
 		lea mem_to_reg_codes(%rip), %rax
 		add %rdx, %rax
@@ -1186,7 +1200,8 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		ef_arg_processed:
 		inc %rdx
-		loop ef_loop2
+		cmp $8, %rdx
+		jne ef_loop2
 
 	ef_gencall:
 		# save reloc_ptr first
@@ -1195,23 +1210,54 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		mov %r9, reloc_ptr(%rip)
 
 		movb $0xe8, (%r8) # call
-		add $1, %r8
+		inc %r8
+		pop %rax # cnt
 		pop %r12 # the function
+		push %rax
 		mov %r8, %r9
 		addq $4, %r9
 		lea program(%rip), %r10
 		sub %r10, %r9
 		sub %r9, %r12 # address is relative from the END of the full callq opcode, so we +4 %r9 to account for the upcoming insertion of the jump address.
-		# (%r12 - ip=%r8) is enough.
 		movl %r12d, (%r8)
 		add $4, %r8
+
+	mov $8, %rdi
+	sub (%rsp), %rdi
+	add $8, %rsp
+	# cnt is on top of stack and we want 8 - cnt
+
+	lea reg_codes(%rip), %rbx
+	xor %rcx, %rcx
+
+	ef_poploop:
+		cmpb $8, %dil
+		je ef_end
+		cmp $2, %rdi
+		jb ef_pop_rex
+
+		movb $0x58, (%r8) # pop
+		movb -1(%rbx,%rdi), %cl # dil = 0 is impossible since we have at least 1 arg or we wouldn't be here
+		addb %cl, (%r8) # register
+		inc %r8
+		jmp ef_end_poploop
+
+		ef_pop_rex:
+		movb $0x41, (%r8)
+		movb -1(%rbx,%rdi), %cl
+		addb $0x58, %cl
+		movb %cl, 1(%r8) # pop + rex register
+		add $2, %r8
+
+		ef_end_poploop:
+		incb %dil
+		jmp ef_poploop
+
+	ef_end:
 		lea program(%rip), %r9
 		sub %r9, %r8
 		movq %r8, ip(%rip)
 
-	ef_end:
-		#sub $8, %rcx
-		#jl ef_incomplete # There were no args in the call
 		xor %rax, %rax
 		jmp ef_ret
 
@@ -1368,13 +1414,14 @@ colon_space: .ascii ": "
 n_symbols: .quad 1
 
 reg_codes:
+# non-rex
 .byte 0b0 # rax
 .byte 0b1 # rcx
 .byte 0b10 # rdx
 .byte 0b11 # rbx
 .byte 0b110 # rdi
 .byte 0b111 # rsi
-rex_reg_codes:
+# rex
 .byte 0b0 # r8
 .byte 0b1 # r9
 
@@ -1398,15 +1445,98 @@ reg_shuffle_codes:
 .byte 0b01001000, 0b10001001, 0b11000001 # rax -> rcx
 .byte 0b01001000, 0b10001001, 0b11000000 # rax -> rax, in fact should never be generated
 
+reg_reg_codes: # idx = source * 24 + dest
+.byte 0b01001101, 0b10001001, 0b11001001 # r9 -> r9
+.byte 0b01001101, 0b10001001, 0b11001000 # r9 -> r8
+.byte 0b01001100, 0b10001001, 0b11001111 # r9 -> rsi
+.byte 0b01001100, 0b10001001, 0b11001110 # r9 -> rdi
+.byte 0b01001100, 0b10001001, 0b11001011 # r9 -> rbx
+.byte 0b01001100, 0b10001001, 0b11001010 # r9 -> rdx
+.byte 0b01001100, 0b10001001, 0b11001001 # r9 -> rcx
+.byte 0b01001100, 0b10001001, 0b11001000 # r9 -> rax
+
+.byte 0b01001101, 0b10001001, 0b11000001 # r8 -> r9
+.byte 0b01001101, 0b10001001, 0b11000000 # r8 -> r8
+.byte 0b01001100, 0b10001001, 0b11000111 # r8 -> rsi
+.byte 0b01001100, 0b10001001, 0b11000110 # r8 -> rdi
+.byte 0b01001100, 0b10001001, 0b11000011 # r8 -> rbx
+.byte 0b01001100, 0b10001001, 0b11000010 # r8 -> rdx
+.byte 0b01001100, 0b10001001, 0b11000001 # r8 -> rcx
+.byte 0b01001100, 0b10001001, 0b11000000 # r8 -> rax
+
+.byte 0b01001001, 0b10001001, 0b11111001 # rsi -> r9
+.byte 0b01001001, 0b10001001, 0b11111000 # rsi -> r8
+.byte 0b01001000, 0b10001001, 0b11111111 # rsi -> rsi
+.byte 0b01001000, 0b10001001, 0b11111110 # rsi -> rdi
+.byte 0b01001000, 0b10001001, 0b11111011 # rsi -> rbx
+.byte 0b01001000, 0b10001001, 0b11111010 # rsi -> rdx
+.byte 0b01001000, 0b10001001, 0b11111001 # rsi -> rcx
+.byte 0b01001000, 0b10001001, 0b11111000 # rsi -> rax
+
+.byte 0b01001001, 0b10001001, 0b11110001 # rdi -> r9
+.byte 0b01001001, 0b10001001, 0b11110000 # rdi -> r8
+.byte 0b01001000, 0b10001001, 0b11110111 # rdi -> rsi
+.byte 0b01001000, 0b10001001, 0b11110110 # rdi -> rdi
+.byte 0b01001000, 0b10001001, 0b11110011 # rdi -> rbx
+.byte 0b01001000, 0b10001001, 0b11110010 # rdi -> rdx
+.byte 0b01001000, 0b10001001, 0b11110001 # rdi -> rcx
+.byte 0b01001000, 0b10001001, 0b11110000 # rdi -> rax
+
+.byte 0b01001001, 0b10001001, 0b1101001 # rbx -> r9
+.byte 0b01001001, 0b10001001, 0b1101000 # rbx -> r8
+.byte 0b01001000, 0b10001001, 0b1101111 # rbx -> rsi
+.byte 0b01001000, 0b10001001, 0b1101110 # rbx -> rdi
+.byte 0b01001000, 0b10001001, 0b1101011 # rbx -> rbx
+.byte 0b01001000, 0b10001001, 0b1101010 # rbx -> rdx
+.byte 0b01001000, 0b10001001, 0b1101001 # rbx -> rcx
+.byte 0b01001000, 0b10001001, 0b1101000 # rbx -> rax
+
+.byte 0b01001001, 0b10001001, 0b11010001 # rdx -> r9
+.byte 0b01001001, 0b10001001, 0b11010000 # rdx -> r8
+.byte 0b01001000, 0b10001001, 0b11010111 # rdx -> rsi
+.byte 0b01001000, 0b10001001, 0b11010110 # rdx -> rdi
+.byte 0b01001000, 0b10001001, 0b11010011 # rdx -> rbx
+.byte 0b01001000, 0b10001001, 0b11010010 # rdx -> rdx
+.byte 0b01001000, 0b10001001, 0b11010001 # rdx -> rcx
+.byte 0b01001000, 0b10001001, 0b11010000 # rdx -> rax
+
+.byte 0b01001001, 0b10001001, 0b11001001 # rcx -> r9
+.byte 0b01001001, 0b10001001, 0b11001000 # rcx -> r8
+.byte 0b01001000, 0b10001001, 0b11001111 # rcx -> rsi
+.byte 0b01001000, 0b10001001, 0b11001110 # rcx -> rdi
+.byte 0b01001000, 0b10001001, 0b11001011 # rcx -> rbx
+.byte 0b01001000, 0b10001001, 0b11001010 # rcx -> rdx
+.byte 0b01001000, 0b10001001, 0b11001001 # rcx -> rcx
+.byte 0b01001000, 0b10001001, 0b11001000 # rcx -> rax
+
+.byte 0b01001001, 0b10001001, 0b11000001 # rax -> r9
+.byte 0b01001001, 0b10001001, 0b11000000 # rax -> r8
+.byte 0b01001000, 0b10001001, 0b11000111 # rax -> rsi
+.byte 0b01001000, 0b10001001, 0b11000110 # rax -> rdi
+.byte 0b01001000, 0b10001001, 0b11000011 # rax -> rbx
+.byte 0b01001000, 0b10001001, 0b11000010 # rax -> rdx
+.byte 0b01001000, 0b10001001, 0b11000001 # rax -> rcx
+.byte 0b01001000, 0b10001001, 0b11000000 # rax -> rax
+
 reg_imm_codes: # load this, then append literal val
-.byte 0b1001001, 0b10111001
-.byte 0b1001001, 0b10111000
-.byte 0b1001000, 0b10111111
-.byte 0b1001000, 0b10111110
-.byte 0b1001000, 0b10111011
-.byte 0b1001000, 0b10111010
-.byte 0b1001000, 0b10111001
-.byte 0b1001000, 0b10111000
+.byte 0b01001001, 0b10111001
+.byte 0b01001001, 0b10111000
+.byte 0b01001000, 0b10111111
+.byte 0b01001000, 0b10111110
+.byte 0b01001000, 0b10111011
+.byte 0b01001000, 0b10111010
+.byte 0b01001000, 0b10111001
+.byte 0b01001000, 0b10111000
+
+reg_rsp_codes: # offset(%rsp) -> reg. append 32-bit offset at end.
+.byte 0b01001001, 0b10001011, 0b10001100, 0b00100100 # -> r9
+.byte 0b01001001, 0b10001011, 0b10000100, 0b00100100 # -> r8
+.byte 0b01001000, 0b10001011, 0b10111100, 0b00100100 # -> rsi
+.byte 0b01001000, 0b10001011, 0b10110100, 0b00100100 # -> rdi
+.byte 0b01001000, 0b10001011, 0b10011100, 0b00100100 # -> rbx
+.byte 0b01001000, 0b10001011, 0b10010100, 0b00100100 # -> rdx
+.byte 0b01001000, 0b10001011, 0b10001100, 0b00100100 # -> rcx
+.byte 0b01001000, 0b10001011, 0b10000100, 0b00100100 # -> rax
 
 last_charnum: .quad 0
 last_linum: .quad 0

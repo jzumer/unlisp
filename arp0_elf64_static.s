@@ -239,7 +239,7 @@ make_relocations: # although we generate a static executable (not relocatable), 
 	reloc_32:
 	movl $0x6000b0, %ecx
 	addl ip(%rip), %ecx
-	addq %rcx, (%rbx)
+	addl %ecx, (%rbx)
 
 	reloc_next:
 	add $16, %rax
