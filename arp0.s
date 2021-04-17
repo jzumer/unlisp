@@ -314,6 +314,8 @@ accept_literal:
 
 		mov prev_dp(%rip), %rsi
 		xor %rax, %rax
+		xor %rbx, %rbx
+		inc %rbx
 		ret
 
 	al_int:
@@ -322,8 +324,10 @@ accept_literal:
 
 		movsx accept_lgt(%rip), %ecx
 		lea accept_buff(%rip), %rsi
+
 		xor %rbx, %rbx
 		xor %rdx, %rdx
+		xor %rax, %rax
 
 		al_ins_int:
 			movsx (%rsi), %ebx
@@ -340,7 +344,8 @@ accept_literal:
 		add %rcx, %rbx
 		movq %rax, (%rbx)
 		add $8, %rbx
-		sub data(%rip), %rbx
+		lea data(%rip), %rcx
+		sub %rcx, %rbx
 		mov %rbx, dp(%rip)
 		mov prev_dp(%rip), %rsi
 
@@ -349,10 +354,14 @@ accept_literal:
 	al_reject:
 		xor %rax, %rax
 		inc %rax
+		xor %rbx, %rbx
+		inc %rbx
 		ret
 
 	al_accept:
 		xor %rax, %rax
+		xor %rbx, %rbx
+		inc %rbx
 		ret
 
 accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd position or later.
@@ -784,6 +793,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movq %rbx, 8(%rcx) # format is n_params:8, address:8
 		addq $16, dp(%rip)
 
+		xor %rax, %rax
 		movb expr(%rip), %al
 		call expect
 
@@ -823,6 +833,9 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 	ef_if:
 		call skip_ws
+		xor %rsi, %rsi
+		call nextch
+
 		movb expr(%rip), %al
 		call expect
 
@@ -832,9 +845,66 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		addq ip(%rip), %rax
 		movb $0x50, (%rax) # push %rax
 		inc %rax
-		movq mem_to_reg_codes(%rip), %rbx
+
+		test %rbx, %rbx # 0 = call, 1 = literal, 2 = env
+		je ef_if_from_mem_go
+
+		cmp $1, %rbx
+		jne ef_if_from_mem
+
+		lea mem_to_reg_codes(%rip), %rbx
+		movq 56(%rbx), %rbx # 8*7=56
 		movq %rbx, (%rax) # mov ret(%rip), %rax
+		add $4, %rax
+		movl %esi, (%rax) # set the literal's address there to mov that literal -- not ret -- into %rax
+		push %rax
+		add $4, %rax
+		jmp ef_if_do_reloc0
+
+		ef_if_from_mem:
+		inc %rdi
+		jz ef_if_from_mem_doreg
+		dec %rdi
+		jmp ef_if_from_rsp_go
+
+		ef_if_from_mem_doreg:
+		lea reg_reg_codes(%rip), %rbx
+		lea 168(%rbx,%rsi), %rbx # 24*7 = 168
+		movw (%rbx), %di
+		movw %di, (%rax)
+		add $2, %rax
+		movb 2(%rbx), %dil
+		movb %dil, (%rax)
+		inc %rax
+		jmp ef_if_dojmp
+
+		ef_if_from_mem_go:
+		lea mem_to_reg_codes(%rip), %rbx
+		movq 56(%rbx), %rbx # 8*7=56
+		movq %rbx, (%rax) # mov ret(%rip), %rax
+		add $4, %rax
+		push %rax
+		add $4, %rax
+		jmp ef_if_do_reloc0
+
+		ef_if_from_rsp_go:
+		lea reg_rsp_codes(%rip), %rbx
+		movl 28(%rbx), %ebx # 4*7=56
+		movl %ebx, (%rax) # mov offset(%rsp), %rax
+		movl %edi, 4(%rax)
 		add $8, %rax
+		jmp ef_if_dojmp
+
+		# add the reloc
+		ef_if_do_reloc0:
+		pop %rdx
+		lea reloc(%rip), %rbx
+		add reloc_ptr(%rip), %rbx
+		movq $0, (%rbx) # 32-bit reloc
+		movq %rdx, 8(%rbx)
+		addq $16, reloc_ptr(%rip)
+
+		ef_if_dojmp:
 		movb $0x48, (%rax)
 		movb $0x85, 1(%rax)
 		movb $0xc0, 2(%rax) # test %rax, %rax
@@ -846,41 +916,201 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		# save the jump to inject the false path's address
 		mov %rax, jmp1(%rip)
 		add $4, %rax
+		mov %rax, jmp_val1(%rip)
 		lea program(%rip), %rbx
 		sub %rbx, %rax
 		mov %rax, ip(%rip)
-		mov %rax, jmp_val1(%rip)
+
+		call skip_ws
+		xor %rsi, %rsi
+		call nextch
 
 		movb expr(%rip), %al
 		call expect
-
-		mov ip(%rip), %rax
-		mov jmp1(%rip), %rbx
-		mov jmp_val1(%rip), %rcx
-		sub %rax, %rcx
-		movl %ecx, (%rbx)
 
 		lea program(%rip), %rax
 		add ip(%rip), %rax
-		movb $0x0f, (%rax)
-		movb $0x85, 1(%rax)
-		add $2, %rax
+
+		test %rbx, %rbx # 0 = call, 1 = literal, 2 = env
+		jz ef_if_do_jmp2
+
+		cmp $1, %rbx
+		jne ef_if_env_true
+
+		lea mem_to_reg_codes(%rip), %rbx
+		movq 56(%rbx), %rbx # 8*7 = 56
+		movq %rbx, (%rax)
+		movb $0x8d, 1(%rax) # 0x8b -> 0x8d for lea instead of mov due to boxing
+		add $4, %rax
+		movl %esi, (%rax)
+		push %rax
+		add $4, %rax
+		lea reg_to_mem_codes(%rip), %rbx
+		movq 56(%rbx), %rbx
+		movq %rbx, (%rax)
+		add $4, %rax
+
+		lea reloc(%rip), %rbx
+		add reloc_ptr(%rip), %rbx
+		movq $0, (%rbx)
+		movq %rax, 8(%rbx)
+		addq $16, reloc_ptr(%rip)
+
+		add $4, %rax
+
+		jmp ef_if_do_reloc
+
+		ef_if_env_true:
+		inc %rdi
+		jz ef_if_true_savereg
+		dec %rdi
+		jmp ef_if_true_savemem
+
+		ef_if_true_savereg:
+		lea reg_to_mem_codes(%rip), %rbx
+		movq (%rbx,%rsi,8), %rbx
+		movq %rbx, (%rax) # mov %reg, ret(%rip)
+		add $4, %rax
+		push %rax
+		add $4, %rax
+		jmp ef_if_do_reloc
+
+		ef_if_true_savemem:
+		movb $0x50, (%rax) # push %rax
+		inc %rax
+		lea reg_rsp_codes(%rip), %rbx
+		movl 28(%rbx), %ebx # 4*7=56; rsp -> rax
+		movl %ebx, (%rax)
+		add $4, %rax
+		movl %edi, (%rax)
+		add $4, %rax # rsp + offset -> rax
+		lea reg_to_mem_codes(%rip), %rbx
+		movq 56(%rbx), %rbx # 8*7=56; rax -> ret(%rip)
+		movq %rbx, (%rax)
+		add $4, %rax
+		push %rax
+		add $4, %rax
+		movb $0x58, (%rax) # pop %rax
+		inc %rax
+
+		ef_if_do_reloc:
+		pop %rdx
+
+		lea reloc(%rip), %rbx
+		add reloc_ptr(%rip), %rbx
+		movq $0, (%rbx)
+		movq %rdx, 8(%rbx)
+		addq $16, reloc_ptr(%rip)
+
+		ef_if_do_jmp2:
+		mov %rax, %rdx
+		mov jmp1(%rip), %rbx
+		mov jmp_val1(%rip), %rcx
+		sub %rcx, %rdx
+		add $5, %rdx # offset for the finishing 'jmp [after-condition]' that will be
+		# inserted momentarily
+		movl %edx, (%rbx)
+
+		movb $0xe9, (%rax)
+		inc %rax
 
 		mov %rax, jmp1(%rip)
 		add $4, %rax
-		lea program(%rip), %rbx
-		sub %rax, %rbx
-		mov %rax, ip(%rip)
 		mov %rax, jmp_val1(%rip)
+		lea program(%rip), %rbx
+		sub %rbx, %rax
+		mov %rax, ip(%rip)
+
+		call skip_ws
+		xor %rsi, %rsi
+		call nextch
 
 		movb expr(%rip), %al
 		call expect
 
-		mov ip(%rip), %rax
+		lea program(%rip), %rax
+		add ip(%rip), %rax
+
+		test %rbx, %rbx # 0 = call, 1 = literal, 2 = env
+		jz ef_if_finish
+
+		cmp $1, %rbx
+		jne ef_if_env_false
+
+		lea mem_to_reg_codes(%rip), %rbx
+		movq 56(%rbx), %rbx # 8*7 = 56
+		movq %rbx, (%rax)
+		movb $0x8d, 1(%rax) # 0x8b -> 0x8d for lea instead of mov due to boxing
+		add $4, %rax
+		movl %esi, (%rax)
+		push %rax
+		add $4, %rax
+		lea reg_to_mem_codes(%rip), %rbx
+		movq 56(%rbx), %rbx
+		movq %rbx, (%rax)
+		add $4, %rax
+
+		lea reloc(%rip), %rbx
+		add reloc_ptr(%rip), %rbx
+		movq $0, (%rbx)
+		movq %rax, 8(%rbx)
+		addq $16, reloc_ptr(%rip)
+
+		add $4, %rax
+
+		jmp ef_if_do_reloc2
+
+		ef_if_env_false:
+		inc %rdi
+		jz ef_if_false_savereg
+		dec %rdi
+		jmp ef_if_false_savemem
+
+		ef_if_false_savereg:
+		lea reg_to_mem_codes(%rip), %rbx
+		movq (%rbx,%rsi,8), %rbx
+		movq %rbx, (%rax) # mov %reg, ret(%rip)
+		add $4, %rax
+		push %rax
+		add $4, %rax
+		jmp ef_if_do_reloc2
+
+		ef_if_false_savemem:
+		movb $0x50, (%rax) # push %rax
+		inc %rax
+		lea reg_rsp_codes(%rip), %rbx
+		movl 28(%rbx), %ebx # 4*7=56; rsp -> rax
+		movl %ebx, (%rax)
+		add $4, %rax
+		movl %edi, (%rax)
+		add $4, %rax # rsp + offset -> rax
+		lea reg_to_mem_codes(%rip), %rbx
+		movq 56(%rbx), %rbx # 8*7=56; rax -> ret(%rip)
+		movq %rbx, (%rax)
+		add $4, %rax
+		push %rax # Save relocation start relocation
+		add $4, %rax
+		movb $0x58, (%rax) # pop %rax
+		inc %rax
+
+		ef_if_do_reloc2:
+		pop %rdx
+
+		lea reloc(%rip), %rbx
+		add reloc_ptr(%rip), %rbx
+		movq $0, (%rbx)
+		movq %rdx, 8(%rbx)
+		addq $16, reloc_ptr(%rip)
+
+		ef_if_finish:
+		mov %rax, %rdx
 		mov jmp1(%rip), %rbx
 		mov jmp_val1(%rip), %rcx
-		sub %rax, %rcx
-		movl %ecx, (%rbx)
+		sub %rcx, %rdx
+		movl %edx, (%rbx)
+		lea program(%rip), %rbx
+		sub %rbx, %rax
+		mov %rax, ip(%rip)
 
 		lea program(%rip), %rax
 		add ip(%rip), %rax
@@ -1434,6 +1664,16 @@ mem_to_reg_codes:
 .byte 0x48, 0x8b, 0x14, 0x25, 0x00, 0x00, 0x00, 0x00 # mov 0x0, %rdx
 .byte 0x48, 0x8b, 0x0c, 0x25, 0x00, 0x00, 0x00, 0x00 # mov 0x0, %rcx
 .byte 0x48, 0x8b, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00 # mov 0x0, %rax
+
+reg_to_mem_codes:
+.byte 0x4c, 0x89, 0x0c, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %r9, 0x0
+.byte 0x4c, 0x89, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %r8, 0x0
+.byte 0x48, 0x89, 0x3c, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %rdi, 0x0
+.byte 0x48, 0x89, 0x34, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %rsi, 0x0
+.byte 0x48, 0x89, 0x1c, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %rbx, 0x0
+.byte 0x48, 0x89, 0x14, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %rdx, 0x0
+.byte 0x48, 0x89, 0x0c, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %rcx, 0x0
+.byte 0x48, 0x89, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %rax, 0x0
 
 reg_shuffle_codes:
 .byte 0b01001001, 0b10001001, 0b11000001 # rax -> r9

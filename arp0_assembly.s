@@ -37,7 +37,7 @@ define_str: .ascii "def"
 define_str_lgt: .quad . - define_str
 print_str: .ascii "print"
 print_str_lgt: .quad . - print_str
-lambda_str: .ascii "\\"
+lambda_str: .ascii "fn"
 lambda_str_lgt: .quad . - lambda_str
 nop_str: .ascii "nop"
 nop_str_lgt: .quad . - nop_str

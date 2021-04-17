@@ -20,13 +20,13 @@ Provided here for those who might grasp something from it.
 (def x "hello\n")
 (def y "hi\n")
 (def str "\tIt works!\n")
-(def print-it (\ (y) (print y)))
-(def switch-print (\ (b x y)
+(def print-it (fn (y) (print y)))
+(def switch-print (fn (b x y)
 	(if b
 		(print x)
 		(print-it y))))
-(def print-times (\ (cnt x)
-					(if cnt ((\ () (print x) (print-times (1- cnt) x)))
+(def print-times (fn (cnt x)
+					(if cnt ((fn () (print x) (print-times (1- cnt) x)))
 							(nop))))
 (print-it x)
 (switch-print 1 x y)
@@ -52,6 +52,7 @@ hi
 ## Methods
 
 Parsing proceeds by recursive descent. Register allocation is done in the naive way: parameters are mov'd into registers in a predefined order and wastefully spilled/filled around function calls. All data are 64-bits.
+The implementation is deeply flawed in many ways, but it's a fun proof of concept.
 
 A valid program takes the following form:
 
@@ -98,8 +99,8 @@ implementation, which uses a "flattened loop".
 - Correct generation of the binary is complicated foremost by the binary format, not by the actual constructs supported, due mostly to very poor documentation. This is probably no longer the case when more realistic register management is implemented.
 - Of the constructs supported, functions (i.e. lambdas, \\) are the most complicated, other constructs are straightforward to implement naively.
 - Generated program register management appears to be the single largest complication in the entire process. A simple and wasteful scheme was implemented here, while full graph coloring-based approaches may require significant code.
+- The bootstrap should probably focus on implementation simplicity: while here we pass everything on registers by default, a bootstrap compiler should probably just pass everything on the stack or in dedicated memory regions or the like to greatly simplify the code.
 - Managing whitespace has a non-negligible effect on code size, i.e. the forth syntax has an implementation advantage and such a syntactic constraint might make sense for the lowest-level bootstrap.
-- It is likely that the bootstrap code could be made drastically smaller by writing a non-generic (unlike flex/bison, etc.) x86\_64 compiler generator and providing a config file to said program. This is a potential next direction for exploration.
 - Despite the few constructs this language is made of, it is surprisingly powerful, suggesting that bootstrapping as fast as possible (for example with an interpreter instead of a compiler) might be greatly beneficial to the process.
 - It could be advantageous to make use of language constructs as the compiler implementation progresses. For example, put the code for str-\>int in the program(%rip), and then `call` it in the compiler when we need that same function, e.g. when reading int from input, instead of implementing
 	basically twice (once as x86\_64 and once as machine code). As a bonus, it is a kind of test on the generated program.
@@ -109,5 +110,4 @@ implementation, which uses a "flattened loop".
 
 Those are fairly encouraging results, and there are several interesting potential next steps. The main questions of interest that remain are:
 - How can the language be made even smaller while retaining or increasing its expressive power? Forth is one way to go about it but it has its flaws from a user's perspective as stack management requires constant mental awareness. If forth's stack management could be automated or greatly aided, it would surely be the optimal bootstrap language.
-- Can a specific compiler generator provide a more compact codebase from which to generate the first bootstrap? Emphasis is on specific/non-generic: it would surely have to have preprogrammed understanding of some specific forms, such as function application, otherwise the specification of the language would just include the same amount of code as a custom compiler. In addition, this does not provide an obvious solution to the main contributor to code size: generated register management. This leads to:
 - How can effective register management be implemented concisely yet non-naively? Or else, how can variable management be handled efficiently in little code (this matters because of stage 1+ bootstrap, although a stage-0 like this one can simply rely on naive full-spill/full-fill "management").
