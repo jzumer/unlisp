@@ -228,9 +228,17 @@ make_relocations: # although we generate a static executable (not relocatable), 
 
 	mov (%rax), %rcx
 	mov 8(%rax), %rbx
-	test %rcx, %rcx # 0 = 32-bit, 1 = 64-bit reloc
+	test %rcx, %rcx # 0 = 32-bit, 1 = 64-bit reloc, 2 - 64-bit program reloc
 	je reloc_32
+	dec %rcx
+	je reloc_64
+	#otherwise, program reloc
 
+	movq $0x4000b0, %rcx
+	addq %rcx, (%rbx)
+	jmp reloc_next
+
+	reloc_64:
 	movq $0x6000b0, %rcx
 	addq ip(%rip), %rcx
 	addq %rcx, (%rbx)

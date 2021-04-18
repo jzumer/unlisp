@@ -537,62 +537,64 @@ find_symbol: # Returns matched code address on %rsi, %rax is error code
 
 find_env: # Like find_symbol but on the environment, all the way to the root.
 	# matched register is on %rsi, %rdi is %rsp-relative offset, %rax is error code.
-	mov curr_env(%rip), %rcx
+	movq curr_env(%rip), %rcx
+	mov %rcx, %r14 # current env base
 	xor %r12, %r12 # %rsp offset (-1 = already in register, otherwise offset(%rsp))
 	dec %r12
-	xor %r13, %r13 # how many vars we have passed in this env
-	xor %r14, %r14 # whether we are looking at stacks or current registers
-	# (0 = current registers)
+	xor %r13, %r13 # register index if applicable
 
 	fe_callloop:
 		test %rcx, %rcx
 		je fe_unrecognized
 
-		mov 8(%rcx), %rax
+brk1:		mov (%rcx), %rax
 		test %rax, %rax
 		je fe_next_env
 
-		inc %r13
-
 		push %rcx
-		movq 8(%rcx), %rbx # lgt
+		movq 8(%rcx), %rdi
+		movq (%rcx), %rbx # lgt
 		movsx accept_lgt(%rip), %ecx
 		cmp %rbx, %rcx
+		pop %rcx
 		jne fe_next_var
 
-		movq %rcx, %rdi # str
+		push %rcx
+		movsx accept_lgt(%rip), %ecx
+
+		#movq %rcx, %rdi # str
 		lea accept_buff(%rip), %rsi
 		repe cmpsb
+		pop %rcx
 
 		jz fe_done_cl # found!
 
 		fe_next_var:
-			pop %rcx
 			addq $16, %rcx
-			addq $8, %r13
+			inc %r13
 			jmp fe_callloop
 
 		fe_next_env:
-			test %r14, %r14
+			cmp $-1, %r12
 			jne fe_env_next_env
 			
-			inc %r14
-			mov %r13, %r12
+			lea (,%r13,8), %r12
 			jmp fe_real_next_env
 
 			fe_env_next_env:
-			add %r13, %r12
+			lea (%r12,%r13,8), %r12
 
 			fe_real_next_env:
 			xor %r13, %r13
-			mov 0x80(%rcx), %rcx
+			movq 0x80(%r14), %rcx
+			mov %rcx, %r14
 			jmp fe_callloop
 
 	fe_done_cl:
 		#xor %rdi, %rdi
 		#sub %r12, %rdi
 		mov %r12, %rdi
-		movq 16(%rcx), %rsi
+		movq %r13, %rsi
 
 		xor %rax, %rax
 		ret
@@ -693,13 +695,11 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movb $0xe9, (%rax) # jmp
 		movl $0x000000, 1(%rax) # placeholder
 		# used to jmp past the lambda code
-		add $1, %rax
-		push %rax
+		inc %rax
 		mov %rax, jmp1(%rip)
-		mov ip(%rip), %rax
-		add $5, %rax
+		add $4, %rax
 		mov %rax, jmp_val1(%rip)
-		mov %rax, ip(%rip)
+		add $5, ip(%rip)
 
 		call skip_ws
 		xor %rsi, %rsi
@@ -712,16 +712,21 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		cmpb ct_opar(%rip), %al
 		jne ef_incomplete
 
-		pop %rax
-		sub $0x88, %rsp # format is (string:8, str lgt:8). Last entry is (prev env:8).
+brk5:		sub $0x88, %rsp # format is (string:8, str lgt:8). Last entry is (prev env:8).
 		mov curr_env(%rip), %rbx
 		mov %rbx, 0x80(%rsp)
 		mov %rsp, curr_env(%rip)
-		push %rax
 
-		mov $8, %ecx # max 8 args
+		mov $8, %rcx # max 8 args
 
 		ef_l_argloop:
+			movsx prev_char(%rip), %rax
+			lea char_type_tbl(%rip), %rbx
+			movb (%rbx, %rax), %al
+
+			cmpb ct_cpar(%rip), %al
+			je ef_l_argdone
+
 			push %rcx
 
 			call skip_ws
@@ -741,18 +746,24 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 			movb var(%rip), %al
 			call accept # if it's not closing parens, it MUST be a var, but it's fine if it's unbound...
+			pop %rcx
 
 			dec %rax
 			test %rax, %rax
 			je ef_incomplete # if %rax is 1, it means not-a-var, otherwise it's either bound or not.
+			push %rcx
 
 			# on accept_buff we now have the varname.
 			# Put the var in the env and set its mapping to the next available register.
 			movsx accept_lgt(%rip), %rsi
 			call malloc
 
+			pop %rcx
+
 			test %rax, %rax
 			jz err_malloc_failed
+
+			push %rcx
 
 			mov %rdi, %r13
 
@@ -760,18 +771,20 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 			movsx accept_lgt(%rip), %ecx
 			rep movsb
 
-			mov (%rsp), %rcx
+			pop %rcx
+			push %rcx
 
-			xor %rdi, %rdi
-			lea (,%rcx,8), %rcx
-			lea (%rcx,%rcx), %rcx
-			sub %rcx, %rdi
-			lea 16(%rsp,%rdi), %rdi # two item on top of stack
+brk2:			mov $0x80, %rdi
+			lea (,%rcx,8), %rdx
+			lea (%rdx,%rdx), %rdx
+			sub %rdi, %rdx
+			mov curr_env(%rip), %rdi
+			lea (%rdi,%rdx), %rdi
 
 			movsx accept_lgt(%rip), %rcx
-			movl %ecx, 8(%rdi)
-			# save str ptr in symbol_tbl
-			movq %r13, (%rdi)
+			movq %rcx, (%rdi)
+			# save str ptr in stack
+			movq %r13, 8(%rdi)
 
 			pop %rcx
 			dec %rcx
@@ -780,55 +793,154 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		jmp ef_incomplete # failed to jump to ef_l_argdone before count was done
 
 		ef_l_argdone:
-		pop %rax
 		mov $8, %rbx
-		sub %rax, %rbx # rbx = param count
+		sub %rcx, %rbx # rbx = param count
 
 		mov dp(%rip), %rcx
 		mov %rcx, prev_dp(%rip)
 		lea data(%rip), %rcx
 		add dp(%rip), %rcx
 		movq %rbx, (%rcx)
-		movq (%rsp), %rbx
+		movq ip(%rip), %rbx
+
+		lea reloc(%rip), %rdx
+		add reloc_ptr(%rip), %rdx
+		movq $2, (%rdx) # 64-bit program reloc
+		movq %rcx, 8(%rdx)
+		addq $16, reloc_ptr(%rip)
+
 		movq %rbx, 8(%rcx) # format is n_params:8, address:8
 		addq $16, dp(%rip)
 
-		xor %rax, %rax
+		call skip_ws
+		xor %rsi, %rsi
+		call nextch
+
+		movsx prev_char(%rip), %rax
+		lea char_type_tbl(%rip), %rbx
+		movb (%rbx, %rax), %al
+
+		cmpb ct_cpar(%rip), %al
+		je ef_incomplete # no expr in the lambda
+
+brk0:		xor %rax, %rax
 		movb expr(%rip), %al
 		call expect
 
 		lea program(%rip), %rax
 		addq ip(%rip), %rax
 
-		test %rbx, %rbx
+		test %rbx, %rbx # 0 = call
 		jz ef_l_skipmov
 
-		#mov mem_to_reg_codes(%rip), %rcx
-		#mov %rcx, (%rax)
-		#add $8, %rax
-		#addq $8, ip(%rip)
+		dec %rbx # 1 = lit (2 = env)
+		jz ef_l_literal
+
+brk:		inc %rdi
+		jz ef_l_reg
+		dec %rdi
+		jmp ef_l_rsp
+
+		ef_l_literal:
+		movb $0x50, (%rax) # push %rax
+		inc %rax
+		lea mem_to_reg_codes(%rip), %rcx
+		movq 56(%rcx), %rcx # mov 0x0, %rax
+		movq %rcx, (%rax)
+		add $4, %rax
+
+		push %rax
+
+		movl %esi, (%rax) #-> mov [literal addr], %rax
+		add $4, %rax
+		lea reg_to_mem_codes(%rip), %rcx
+		mov 56(%rcx), %rcx # mov %rax, 0x0
+		movq %rcx, (%rax)
+		add $4, %rax
+
+		lea reloc(%rip), %rbx
+		add reloc_ptr(%rip), %rbx
+		movq $0, (%rbx) # 32-bit reloc
+		movq %rax, 8(%rbx)
+		addq $16, reloc_ptr(%rip)
+
+		add $4, %rax
+		movb $0x58, (%rax) # pop %rax
+		inc %rax
+		addq $18, ip(%rip)
+		jmp ef_l_reloc
+
+		ef_l_reg:
+		lea reg_reg_codes(%rip), %rbx
+		# rsi codes are actually backward compared to the convention, so flip it first
+		mov %rsi, %rdi
+		mov $8, %rsi
+		sub %rdi, %rsi
+		lea (%rsi,%rsi,2), %rsi
+		lea 21(%rbx,%rsi), %rbx # 3*7 = 21
+		movw (%rbx), %di
+		movw %di, (%rax)
+		add $2, %rax
+		movb 2(%rbx), %dil
+		movb %dil, (%rax)
+		inc %rax
+		jmp ef_l_skipmov
+
+		ef_l_mem:
+		lea mem_to_reg_codes(%rip), %rbx
+		movq 56(%rbx), %rbx # 8*7=56
+		movq %rbx, (%rax) # mov ret(%rip), %rax
+		add $4, %rax
+
+		push %rax
+
+		add $4, %rax
+		jmp ef_l_reloc
+
+		ef_l_rsp:
+		lea reg_rsp_codes(%rip), %rbx
+		movl 28(%rbx), %ebx # 4*7=56
+		movl %ebx, (%rax) # mov offset(%rsp), %rax
+		movl %edi, 4(%rax)
+		add $8, %rax
+		jmp ef_l_skipmov
+
+		ef_l_reloc:
+		pop %rdx
+		lea reloc(%rip), %rbx
+		add reloc_ptr(%rip), %rbx
+		movq $0, (%rbx) # 32-bit reloc
+		movq %rdx, 8(%rbx)
+		addq $16, reloc_ptr(%rip)
 
 		ef_l_skipmov:
 		# ??. implement recursion somehow? either jmp1 is filled and def fills it
 		#	or we receive our symbol and patch it ourselves at start.
 
 		# Teardown env; note that this leaks the string we had allocated...
-		movq 0x80(%rsp), %rax
-		movq %rax, curr_env(%rip)
+		mov %rax, %rbx
+		lea program(%rip), %rcx
+		sub %rcx, %rbx
+		movq %rbx, ip(%rip)
+
+brk4:		movq curr_env(%rip), %rcx
+		movq 0x80(%rcx), %rcx
+		movq %rcx, curr_env(%rip)
 		add $0x88, %rsp
 
-		mov ip(%rip), %rax
 		mov jmp1(%rip), %rbx
 		mov jmp_val1(%rip), %rcx
-		sub %rax, %rcx
-		movl %ecx, (%rbx)
+		sub %rcx, %rax
+		movl %eax, (%rbx)
 
-		lea program(%rip), %rax
-		pop %rsi
-		sub %rax, %rsi # the ip to for the code we just inserted
+		xor %rsi, %rsi
+		call nextch # skip over final ')'
+
+		mov prev_dp(%rip), %rsi
 
 		xor %rax, %rax
 		xor %rbx, %rbx
+		inc %rbx # functions count as literals
 		ret
 
 	ef_if:
@@ -869,7 +981,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		ef_if_from_mem_doreg:
 		lea reg_reg_codes(%rip), %rbx
-		lea 168(%rbx,%rsi), %rbx # 24*7 = 168
+		lea 21(%rbx,%rsi), %rbx # 3*7 = 21
 		movw (%rbx), %di
 		movw %di, (%rax)
 		add $2, %rax
@@ -1165,6 +1277,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		movsx var(%rip), %rax
 		call accept
+
 		test %rax, %rax
 		jz ef_redef # symbol exist so it's being redefined
 
@@ -1405,9 +1518,8 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		ef_env_direct:
 		# This was directly in a reg whose index is in %rsi, emit the mov
 		lea reg_reg_codes(%rip), %rax
-		lea (,%rsi,8), %rsi
-		lea (%rax,%rsi,4), %rsi
-		mov (%rsi,%rdx), %rax # address is reg_reg_codes + 24*rsi + rcx
+		lea (%rsi,%rsi,2), %rsi
+		mov (%rsi,%rax), %rax # address is reg_reg_codes + 3*rsi + rcx
 		movb %al, (%r8)
 		inc %rax
 		movw %ax, 1(%r8)
@@ -1685,78 +1797,78 @@ reg_shuffle_codes:
 .byte 0b01001000, 0b10001001, 0b11000001 # rax -> rcx
 .byte 0b01001000, 0b10001001, 0b11000000 # rax -> rax, in fact should never be generated
 
-reg_reg_codes: # idx = source * 24 + dest
-.byte 0b01001101, 0b10001001, 0b11001001 # r9 -> r9
-.byte 0b01001101, 0b10001001, 0b11001000 # r9 -> r8
-.byte 0b01001100, 0b10001001, 0b11001111 # r9 -> rsi
-.byte 0b01001100, 0b10001001, 0b11001110 # r9 -> rdi
-.byte 0b01001100, 0b10001001, 0b11001011 # r9 -> rbx
-.byte 0b01001100, 0b10001001, 0b11001010 # r9 -> rdx
-.byte 0b01001100, 0b10001001, 0b11001001 # r9 -> rcx
-.byte 0b01001100, 0b10001001, 0b11001000 # r9 -> rax
+reg_reg_codes: # idx = source * 3 + dest
+.byte 0x49, 0x89, 0xc1 # r9 -> r9
+.byte 0x49, 0x89, 0xc0 # r9 -> r8
+.byte 0x48, 0x89, 0xc6 # r9 -> rsi
+.byte 0x48, 0x89, 0xc7 # r9 -> rdi
+.byte 0x48, 0x89, 0xc3 # r9 -> rbx
+.byte 0x48, 0x89, 0xc2 # r9 -> rdx
+.byte 0x48, 0x89, 0xc1 # r9 -> rcx
+.byte 0x48, 0x89, 0xc0 # r9 -> rax
 
-.byte 0b01001101, 0b10001001, 0b11000001 # r8 -> r9
-.byte 0b01001101, 0b10001001, 0b11000000 # r8 -> r8
-.byte 0b01001100, 0b10001001, 0b11000111 # r8 -> rsi
-.byte 0b01001100, 0b10001001, 0b11000110 # r8 -> rdi
-.byte 0b01001100, 0b10001001, 0b11000011 # r8 -> rbx
-.byte 0b01001100, 0b10001001, 0b11000010 # r8 -> rdx
-.byte 0b01001100, 0b10001001, 0b11000001 # r8 -> rcx
-.byte 0b01001100, 0b10001001, 0b11000000 # r8 -> rax
+.byte 0x49, 0x89, 0xc1 # r8 -> r9
+.byte 0x49, 0x89, 0xc0 # r8 -> r8
+.byte 0x48, 0x89, 0xc6 # r8 -> rsi
+.byte 0x48, 0x89, 0xc7 # r8 -> rdi
+.byte 0x48, 0x89, 0xc3 # r8 -> rbx
+.byte 0x48, 0x89, 0xc2 # r8 -> rdx
+.byte 0x48, 0x89, 0xc1 # r8 -> rcx
+.byte 0x48, 0x89, 0xc0 # r8 -> rax
 
-.byte 0b01001001, 0b10001001, 0b11111001 # rsi -> r9
-.byte 0b01001001, 0b10001001, 0b11111000 # rsi -> r8
-.byte 0b01001000, 0b10001001, 0b11111111 # rsi -> rsi
-.byte 0b01001000, 0b10001001, 0b11111110 # rsi -> rdi
-.byte 0b01001000, 0b10001001, 0b11111011 # rsi -> rbx
-.byte 0b01001000, 0b10001001, 0b11111010 # rsi -> rdx
-.byte 0b01001000, 0b10001001, 0b11111001 # rsi -> rcx
-.byte 0b01001000, 0b10001001, 0b11111000 # rsi -> rax
+.byte 0x49, 0x89, 0xc1 # rsi -> r9
+.byte 0x49, 0x89, 0xc0 # rsi -> r8
+.byte 0x48, 0x89, 0xc6 # rsi -> rsi
+.byte 0x48, 0x89, 0xc7 # rsi -> rdi
+.byte 0x48, 0x89, 0xc3 # rsi -> rbx
+.byte 0x48, 0x89, 0xc2 # rsi -> rdx
+.byte 0x48, 0x89, 0xc1 # rsi -> rcx
+.byte 0x48, 0x89, 0xc0 # rsi -> rax
 
-.byte 0b01001001, 0b10001001, 0b11110001 # rdi -> r9
-.byte 0b01001001, 0b10001001, 0b11110000 # rdi -> r8
-.byte 0b01001000, 0b10001001, 0b11110111 # rdi -> rsi
-.byte 0b01001000, 0b10001001, 0b11110110 # rdi -> rdi
-.byte 0b01001000, 0b10001001, 0b11110011 # rdi -> rbx
-.byte 0b01001000, 0b10001001, 0b11110010 # rdi -> rdx
-.byte 0b01001000, 0b10001001, 0b11110001 # rdi -> rcx
-.byte 0b01001000, 0b10001001, 0b11110000 # rdi -> rax
+.byte 0x49, 0x89, 0xc1 # rdi -> r9
+.byte 0x49, 0x89, 0xc0 # rdi -> r8
+.byte 0x48, 0x89, 0xc6 # rdi -> rsi
+.byte 0x48, 0x89, 0xc7 # rdi -> rdi
+.byte 0x48, 0x89, 0xc3 # rdi -> rbx
+.byte 0x48, 0x89, 0xc2 # rdi -> rdx
+.byte 0x48, 0x89, 0xc1 # rdi -> rcx
+.byte 0x48, 0x89, 0xc0 # rdi -> rax
 
-.byte 0b01001001, 0b10001001, 0b1101001 # rbx -> r9
-.byte 0b01001001, 0b10001001, 0b1101000 # rbx -> r8
-.byte 0b01001000, 0b10001001, 0b1101111 # rbx -> rsi
-.byte 0b01001000, 0b10001001, 0b1101110 # rbx -> rdi
-.byte 0b01001000, 0b10001001, 0b1101011 # rbx -> rbx
-.byte 0b01001000, 0b10001001, 0b1101010 # rbx -> rdx
-.byte 0b01001000, 0b10001001, 0b1101001 # rbx -> rcx
-.byte 0b01001000, 0b10001001, 0b1101000 # rbx -> rax
+.byte 0x49, 0x89, 0xc1 # rbx -> r9
+.byte 0x49, 0x89, 0xc0 # rbx -> r8
+.byte 0x48, 0x89, 0xc6 # rbx -> rsi
+.byte 0x48, 0x89, 0xc7 # rbx -> rdi
+.byte 0x48, 0x89, 0xc3 # rbx -> rbx
+.byte 0x48, 0x89, 0xc2 # rbx -> rdx
+.byte 0x48, 0x89, 0xc1 # rbx -> rcx
+.byte 0x48, 0x89, 0xc0 # rbx -> rax
 
-.byte 0b01001001, 0b10001001, 0b11010001 # rdx -> r9
-.byte 0b01001001, 0b10001001, 0b11010000 # rdx -> r8
-.byte 0b01001000, 0b10001001, 0b11010111 # rdx -> rsi
-.byte 0b01001000, 0b10001001, 0b11010110 # rdx -> rdi
-.byte 0b01001000, 0b10001001, 0b11010011 # rdx -> rbx
-.byte 0b01001000, 0b10001001, 0b11010010 # rdx -> rdx
-.byte 0b01001000, 0b10001001, 0b11010001 # rdx -> rcx
-.byte 0b01001000, 0b10001001, 0b11010000 # rdx -> rax
+.byte 0x49, 0x89, 0xc1 # rdx -> r9
+.byte 0x49, 0x89, 0xc0 # rdx -> r8
+.byte 0x48, 0x89, 0xc6 # rdx -> rsi
+.byte 0x48, 0x89, 0xc7 # rdx -> rdi
+.byte 0x48, 0x89, 0xc3 # rdx -> rbx
+.byte 0x48, 0x89, 0xc2 # rdx -> rdx
+.byte 0x48, 0x89, 0xc1 # rdx -> rcx
+.byte 0x48, 0x89, 0xc0 # rdx -> rax
 
-.byte 0b01001001, 0b10001001, 0b11001001 # rcx -> r9
-.byte 0b01001001, 0b10001001, 0b11001000 # rcx -> r8
-.byte 0b01001000, 0b10001001, 0b11001111 # rcx -> rsi
-.byte 0b01001000, 0b10001001, 0b11001110 # rcx -> rdi
-.byte 0b01001000, 0b10001001, 0b11001011 # rcx -> rbx
-.byte 0b01001000, 0b10001001, 0b11001010 # rcx -> rdx
-.byte 0b01001000, 0b10001001, 0b11001001 # rcx -> rcx
-.byte 0b01001000, 0b10001001, 0b11001000 # rcx -> rax
+.byte 0x49, 0x89, 0xc1 # rcx -> r9
+.byte 0x49, 0x89, 0xc0 # rcx -> r8
+.byte 0x48, 0x89, 0xc6 # rcx -> rsi
+.byte 0x48, 0x89, 0xc7 # rcx -> rdi
+.byte 0x48, 0x89, 0xc3 # rcx -> rbx
+.byte 0x48, 0x89, 0xc2 # rcx -> rdx
+.byte 0x48, 0x89, 0xc1 # rcx -> rcx
+.byte 0x48, 0x89, 0xc0 # rcx -> rax
 
-.byte 0b01001001, 0b10001001, 0b11000001 # rax -> r9
-.byte 0b01001001, 0b10001001, 0b11000000 # rax -> r8
-.byte 0b01001000, 0b10001001, 0b11000111 # rax -> rsi
-.byte 0b01001000, 0b10001001, 0b11000110 # rax -> rdi
-.byte 0b01001000, 0b10001001, 0b11000011 # rax -> rbx
-.byte 0b01001000, 0b10001001, 0b11000010 # rax -> rdx
-.byte 0b01001000, 0b10001001, 0b11000001 # rax -> rcx
-.byte 0b01001000, 0b10001001, 0b11000000 # rax -> rax
+.byte 0x49, 0x89, 0xc1 # rax -> r9
+.byte 0x49, 0x89, 0xc0 # rax -> r8
+.byte 0x48, 0x89, 0xc6 # rax -> rsi
+.byte 0x48, 0x89, 0xc7 # rax -> rdi
+.byte 0x48, 0x89, 0xc3 # rax -> rbx
+.byte 0x48, 0x89, 0xc2 # rax -> rdx
+.byte 0x48, 0x89, 0xc1 # rax -> rcx
+.byte 0x48, 0x89, 0xc0 # rax -> rax
 
 reg_imm_codes: # load this, then append literal val
 .byte 0b01001001, 0b10111001
