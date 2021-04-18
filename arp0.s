@@ -454,7 +454,20 @@ accept_atom:
 
 	cmpb cc_char(%rip), %al
 	je aa_var
+	cmpb cc_symb(%rip), %al
+	jne aa_lit
 
+	movsx prev_char(%rip), %rax
+	lea char_type_tbl(%rip), %rbx
+	movb (%rbx,%rax), %al
+	cmpb ct_none(%rip), %al
+	je aa_var
+
+	xor %rax, %rax
+	inc %rax # no good, this is a special character!
+	ret
+
+	aa_lit:
 	movsx literal(%rip), %rax
 	call accept
 	ret
@@ -1253,11 +1266,16 @@ brk4:		movq curr_env(%rip), %rcx
 		mov %rax, %rsi
 		push %rsi
 
+		movb prev_char(%rip), %al
+		lea char_type_tbl(%rip), %rsi
+		movb (%rax,%rsi), %al
+		cmpb ct_cpar(%rip), %al
+		je ef_end_nop
+
 		call skip_ws
 		xor %rsi, %rsi
 		call nextch
 
-		xor %rax, %rax
 		movb prev_char(%rip), %al
 		lea char_type_tbl(%rip), %rsi
 		movb (%rax,%rsi), %al
@@ -1265,6 +1283,7 @@ brk4:		movq curr_env(%rip), %rcx
 		cmpb ct_cpar(%rip), %al
 		jne ef_incomplete
 
+		ef_end_nop:
 		pop %rsi
 		xor %rax, %rax
 		xor %rbx, %rbx
