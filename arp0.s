@@ -1,4 +1,5 @@
 .global _start
+# XXX TODO: recursion currently segfaults
 
 .text
 
@@ -340,9 +341,7 @@ accept_literal:
 		add %rcx, %rbx
 		movq %rax, (%rbx)
 		add $8, %rbx
-		lea data(%rip), %rcx
-		sub %rcx, %rbx
-		mov %rbx, dp(%rip)
+		add $8, dp(%rip)
 		mov prev_dp(%rip), %rsi
 
 		jmp al_accept
@@ -654,6 +653,18 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	# if this fails, it's not a reserved word and not a bound function, so it's broken.
 
 	ef_lambda:
+		mov pending_fn(%rip), %rsi
+		test %rsi, %rsi
+		je ef_not_a_def
+
+		lea symbol_tbl(%rip), %rax
+		lea (%rsi,%rsi,2), %rsi
+		lea (%rax,%rsi,8), %rax
+		mov dp(%rip), %rsi
+		mov %rsi, 16(%rax)
+		pushq %rsi
+
+		ef_not_a_def:
 		mov ip(%rip), %rax
 		mov %rax, prev_ip(%rip)
 		lea program(%rip), %rax
@@ -663,10 +674,8 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		# used to jmp past the lambda code
 		inc %rax
 		push %rax
-		#mov %rax, jmp1(%rip)
 		add $4, %rax
 		push %rax
-		#mov %rax, jmp_val1(%rip)
 		add $5, ip(%rip)
 
 		call skip_ws
@@ -782,18 +791,6 @@ put_var:			mov $0x80, %rdi
 		movq %rcx, 8(%rdx)
 		addq $16, reloc_ptr(%rip)
 
-		#mov prev_dp(%rip), %rsi
-		mov pending_fn(%rip), %rsi
-		test %rsi, %rsi
-		je ef_not_a_def
-
-		lea symbol_tbl(%rip), %rax
-		lea (%rsi,%rsi,2), %rsi
-		lea (%rax,%rsi,8), %rax
-		mov prev_dp(%rip), %rsi
-		mov %rsi, 16(%rax)
-
-		ef_not_a_def:
 		xor %rsi, %rsi
 
 		movsx prev_char(%rip), %rax
@@ -908,15 +905,11 @@ put_var:			mov $0x80, %rdi
 
 		pop %rcx
 		pop %rbx
-		# can't use the jmp1 mechanism here because we use 'accept' which
-		#ends up overwriting the jmp1/jmp_val1 vals.
-		#mov jmp1(%rip), %rbx
-		#mov jmp_val1(%rip), %rcx
 		sub %rcx, %rax
 		movl %eax, (%rbx)
 
-		lea data(%rip), %rsi
-		addq prev_dp(%rip), %rsi
+		#mov prev_dp(%rip), %rsi
+poppy:		pop %rsi
 
 		xor %rax, %rax
 		xor %rbx, %rbx
@@ -1042,9 +1035,9 @@ put_var:			mov $0x80, %rdi
 		add $2, %rax
 
 		# save the jump to inject the false path's address
-		mov %rax, jmp1(%rip)
+		push %rax
 		add $4, %rax
-		mov %rax, jmp_val1(%rip)
+		push %rax
 		lea program(%rip), %rbx
 		sub %rbx, %rax
 		mov %rax, ip(%rip)
@@ -1130,8 +1123,8 @@ put_var:			mov $0x80, %rdi
 
 		ef_if_do_jmp2:
 		mov %rax, %rdx
-		mov jmp1(%rip), %rbx
-		mov jmp_val1(%rip), %rcx
+		pop %rcx
+		pop %rbx
 		sub %rcx, %rdx
 		add $5, %rdx # offset for the finishing 'jmp [after-condition]' that will be
 		# inserted momentarily
@@ -1140,9 +1133,9 @@ put_var:			mov $0x80, %rdi
 		movb $0xe9, (%rax)
 		inc %rax
 
-		mov %rax, jmp1(%rip)
+		push %rax
 		add $4, %rax
-		mov %rax, jmp_val1(%rip)
+		push %rax
 		lea program(%rip), %rbx
 		sub %rbx, %rax
 		mov %rax, ip(%rip)
@@ -1167,14 +1160,15 @@ put_var:			mov $0x80, %rdi
 		movb $0x8d, 1(%rax) # 0x8b -> 0x8d for lea instead of mov due to boxing
 		add $4, %rax
 		movl %esi, (%rax)
-		push %rax
+		push %rax # for reloc
 		add $4, %rax
 		lea reg_to_mem_codes(%rip), %rbx
 		movq 56(%rbx), %rbx
 		movq %rbx, (%rax)
 		add $4, %rax
 
-		lea reloc(%rip), %rbx
+		lea reloc(%rip), %rbx # do immediate reloc here since our reloc code
+		# only processes one reloc from stack
 		add reloc_ptr(%rip), %rbx
 		movq $0, (%rbx)
 		movq %rax, 8(%rbx)
@@ -1228,8 +1222,8 @@ put_var:			mov $0x80, %rdi
 
 		ef_if_finish:
 		mov %rax, %rdx
-		mov jmp1(%rip), %rbx
-		mov jmp_val1(%rip), %rcx
+		pop %rcx
+		pop %rbx
 		sub %rcx, %rdx
 		movl %edx, (%rbx)
 		lea program(%rip), %rbx
@@ -1335,10 +1329,13 @@ put_var:			mov $0x80, %rdi
 		test %rax, %rax
 		jne ef_incomplete
 
+		push %rsi
+
 		call skip_ws
 
-		mov prev_dp(%rip), %rsi
-		brk:
+		pop %rsi
+
+		#mov prev_dp(%rip), %rsi
 		pop %rdi
 		mov %rsi, 16(%rdi)
 
@@ -1367,7 +1364,7 @@ put_var:			mov $0x80, %rdi
 		lea data(%rip), %rdi
 		add %rdi, %rsi
 
-got_fn:		mov (%rsi), %rdi
+		mov (%rsi), %rdi
 		pushq 8(%rsi) # function address
 		pushq %rdi # arg count
 		pushq %rdi # arg count that will be used as counter
@@ -1446,6 +1443,8 @@ got_fn:		mov (%rsi), %rdi
 	pop %rcx # decremented value in above loop, i.e. 0 -- drop
 	lea program(%rip), %r8
 	addq ip(%rip), %r8
+	lea reloc(%rip), %r9
+	add reloc_ptr(%rip), %r9
 
 	mov (%rsp), %rax # arg count
 	mov $8, %rcx
@@ -1528,7 +1527,7 @@ got_fn:		mov (%rsi), %rdi
 		ef_arg_call: # then it was a call, and ret val is at 0 in data, so mov it to our reg
 		# mov 0x0 = ret mem addr, %reg
 		lea mem_to_reg_codes(%rip), %rax
-		add %rdx, %rax
+		lea (%rax,%rdx,8), %rax
 		movq (%rax), %rbx
 		movq %rbx, (%r8)
 
@@ -1565,9 +1564,6 @@ got_fn:		mov (%rsi), %rdi
 
 	mov $8, %rdi
 	pop %r9
-	#sub (%rsp), %rdi
-	#add $8, %rsp
-	# cnt is on top of stack and we want 8 - cnt
 
 	lea reg_codes(%rip), %rbx
 	xor %rcx, %rcx
@@ -1619,11 +1615,13 @@ got_fn:		mov (%rsi), %rdi
 	ef_ret:
 		push %rbx
 		push %rax
+		push %rsi
 
 		call skip_ws
 		xor %rsi, %rsi
 		call nextch # skip over final ')'
 
+		pop %rsi
 		pop %rax
 		pop %rbx
 		ret
@@ -1751,13 +1749,6 @@ accept_lgt: .byte 0
 curr_env: .quad 0 # set to 0 if only globals exist, otherwise set to current env on stack.
 # At the time an env is popped off the stack, the pointer to the previous env is placed here.
 # If the result is 0, it means we've popped all the stacks off.
-
-# jump locations for post-read redirects e.g. if and inline defs
-# jmp_val* is the initial value since the jumps are relative
-jmp1: .quad 0
-jmp_val1: .quad 0
-jmp2: .quad 0
-jmp_val2: .quad 0
 
 comma_space: .ascii ", "
 colon_space: .ascii ": "

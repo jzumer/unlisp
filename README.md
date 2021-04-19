@@ -105,6 +105,7 @@ implementation, which uses a "flattened loop".
 	This also has a few additional advantages: it should make implementing all the primitives used in the x86\_64 program straightforward or even automatic, allowing us to provide read, compile and (at least parts of) print to the language with little to no extra code.
 - While macros were deliberately avoided in this project, in real life they would have cut down quite a lot of code. However, foregoing macros allows implementing an assembler in machine code far more easily if that is ever a concern. While this isn't considered at this point, this could be an interesting
 	far future endeavor if an interesting chip shows up without an assembler available (I believe this applies for example to seaForth and green array chips, which use Forth instead "as" the assembly language).
+- The true-1-pass-with-recursive-decent approach is a neat trick, but it results in running unnecessary code-paths. The 1-pass parsing does not seem to have any issue, but code generation is more complicated.
 
 Those are fairly encouraging results, and there are several interesting potential next steps. The main questions of interest that remain are:
 - How can the language be made even smaller while retaining or increasing its expressive power? Forth is one way to go about it but it has its flaws from a user's perspective as stack management requires constant mental awareness. If forth's stack management could be automated or greatly aided, it would surely be the optimal bootstrap language.
