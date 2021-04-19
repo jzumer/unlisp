@@ -659,12 +659,14 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		lea program(%rip), %rax
 		add ip(%rip), %rax
 		movb $0xe9, (%rax) # jmp
-		movl $0x000000, 1(%rax) # placeholder
+		movl $0, 1(%rax) # placeholder
 		# used to jmp past the lambda code
 		inc %rax
-		mov %rax, jmp1(%rip)
+		push %rax
+		#mov %rax, jmp1(%rip)
 		add $4, %rax
-		mov %rax, jmp_val1(%rip)
+		push %rax
+		#mov %rax, jmp_val1(%rip)
 		add $5, ip(%rip)
 
 		call skip_ws
@@ -805,6 +807,8 @@ put_var:			mov $0x80, %rdi
 		movsx expr(%rip), %rax
 		call expect
 
+		mov ip(%rip), %rax
+		mov %rax, prev_ip(%rip)
 		lea program(%rip), %rax
 		add ip(%rip), %rax
 		test %rbx, %rbx # 0 = call
@@ -895,18 +899,19 @@ put_var:			mov $0x80, %rdi
 		movb $0xc3, (%rax) # ret
 		inc %rax
 
-		mov %rax, %rbx
-		lea program(%rip), %rcx
-		sub %rcx, %rbx
-		movq %rbx, ip(%rip)
+		incq ip(%rip)
 
 		movq curr_env(%rip), %rcx
 		movq 0x80(%rcx), %rcx
 		movq %rcx, curr_env(%rip)
 		add $0x88, %rsp
 
-		mov jmp1(%rip), %rbx
-		mov jmp_val1(%rip), %rcx
+		pop %rcx
+		pop %rbx
+		# can't use the jmp1 mechanism here because we use 'accept' which
+		#ends up overwriting the jmp1/jmp_val1 vals.
+		#mov jmp1(%rip), %rbx
+		#mov jmp_val1(%rip), %rcx
 		sub %rcx, %rax
 		movl %eax, (%rbx)
 
@@ -1010,6 +1015,9 @@ put_var:			mov $0x80, %rdi
 		lea reg_rsp_codes(%rip), %rbx
 		movl 28(%rbx), %ebx # 4*7=56
 		movl %ebx, (%rax) # mov offset(%rsp), %rax
+		mov $8, %rbx
+		sub %rdi, %rbx
+		lea 8(,%rbx,8), %rdi # +8 because we `push rax` to start with
 		movl %edi, 4(%rax)
 		add $8, %rax
 		jmp ef_if_dojmp
@@ -1027,7 +1035,8 @@ put_var:			mov $0x80, %rdi
 		movb $0x48, (%rax)
 		movb $0x85, 1(%rax)
 		movb $0xc0, 2(%rax) # test %rax, %rax
-		add $3, %rax
+		movb $0x58, 3(%rax) # pop %rax -- we no longer need the test var
+		add $4, %rax
 		movb $0x0f, (%rax)
 		movb $0x84, 1(%rax) # je [4 bytes offset]
 		add $2, %rax
@@ -1229,8 +1238,8 @@ put_var:			mov $0x80, %rdi
 
 		lea program(%rip), %rax
 		add ip(%rip), %rax
-		movb $0x58, (%rax) # pop %rax
-		inc %rax
+		#movb $0x58, (%rax) # pop %rax
+		#inc %rax
 		lea program(%rip), %rbx
 		sub %rbx, %rax
 		mov %rax, ip(%rip)
