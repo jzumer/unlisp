@@ -14,6 +14,7 @@
 
 .global symbol_tbl
 .global n_symbols
+.global pending_fn
 
 .global define_str
 .global define_str_lgt
@@ -73,6 +74,9 @@ footer_ptr: .quad 0
 reloc_ptr: .quad 16
 reloc: .quad 0x0, program + 0x1e # 32-bit reloc in the print above for the ret
 .space 65536 # format is (type, address) where type is 0 if 32-bit and 1 otherwise
+
+pending_fn: .quad 0 # if !=0, the index in the symbol table where the lambda will
+# preemptively insert itself.
 
 data:
 .quad 0 # ret

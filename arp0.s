@@ -583,27 +583,26 @@ find_env: # Like find_symbol but on the environment, all the way to the root.
 		fe_next_var:
 			addq $16, %rcx
 			inc %r13
+
+			cmp $-1, %r12
+			jne fe_callloop
+
+			add $8, %r12
 			jmp fe_callloop
 
 		fe_next_env:
 			cmp $-1, %r12
-			jne fe_env_next_env
-			
-			lea (,%r13,8), %r12
-			jmp fe_real_next_env
+			jne fe_cont
 
-			fe_env_next_env:
-			lea (%r12,%r13,8), %r12
+			xor %r12, %r12
 
-			fe_real_next_env:
+			fe_cont:
 			xor %r13, %r13
 			movq 0x80(%r14), %rcx
 			mov %rcx, %r14
 			jmp fe_callloop
 
 	fe_done_cl:
-		#xor %rdi, %rdi
-		#sub %r12, %rdi
 		mov %r12, %rdi
 		movq %r13, %rsi
 
@@ -645,43 +644,13 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 	cld
 	movsx accept_lgt(%rip), %ecx
-	mov define_str_lgt(%rip), %rdx
-	cmp %rcx, %rdx
-	jne ef_nodef
-	lea accept_buff(%rip), %rsi
-	lea define_str(%rip), %rdi
-	repe cmpsb
-	jz ef_def
-
-	ef_nodef:
-	movsx accept_lgt(%rip), %ecx
-	mov nop_str_lgt(%rip), %rdx
-	cmp %rcx, %rdx
-	jne ef_no_nop
-	lea accept_buff(%rip), %rsi
-	lea nop_str(%rip), %rdi
-	repe cmpsb
-	jz ef_nop
-
-	ef_no_nop:
-	movsx accept_lgt(%rip), %ecx
-	mov if_str_lgt(%rip), %rdx
-	cmp %rcx, %rdx
-	jne ef_no_if
-	lea accept_buff(%rip), %rsi
-	lea if_str(%rip), %rdi
-	repe cmpsb
-	jz ef_if
-
-	ef_no_if:
-	movsx accept_lgt(%rip), %ecx
 	mov lambda_str_lgt(%rip), %rdx
 	cmp %rcx, %rdx
-	jne ef_incomplete
+	jne ef_no_lambda
 	lea accept_buff(%rip), %rsi
 	lea lambda_str(%rip), %rdi
 	repe cmpsb
-	jne ef_incomplete
+	jne ef_no_lambda
 	# if this fails, it's not a reserved word and not a bound function, so it's broken.
 
 	ef_lambda:
@@ -710,7 +679,13 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		xor %rsi, %rsi
 		call nextch # skip '('
 
-		sub $0x88, %rsp # format is (string:8, str lgt:8). Last entry is (prev env:8).
+		mov $8, %rcx # format is (string:8, str lgt:8). Last entry is (prev env:8).
+		ef_clear_stack:
+			pushq $0
+			pushq $0
+			loop ef_clear_stack
+		pushq $0
+
 		mov curr_env(%rip), %rbx
 		mov %rbx, 0x80(%rsp)
 		mov %rsp, curr_env(%rip)
@@ -718,7 +693,9 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		mov $8, %rcx # max 8 args
 
 		ef_l_argloop:
+			push %rcx
 			call skip_ws
+			pop %rcx
 
 			movsx prev_char(%rip), %rax
 			lea char_type_tbl(%rip), %rbx
@@ -759,11 +736,11 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 			pop %rcx
 			push %rcx
 
-			mov $0x80, %rdi
+put_var:			mov $0x80, %rdi
 			lea (,%rcx,8), %rdx
 			lea (%rdx,%rdx), %rdx
-			sub %rdi, %rdx
-			mov curr_env(%rip), %rdi
+			sub %rdx, %rdi
+			mov curr_env(%rip), %rdx
 			lea (%rdi,%rdx), %rdi
 
 			movsx accept_lgt(%rip), %rcx
@@ -794,6 +771,8 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		add dp(%rip), %rcx
 		movq %rbx, (%rcx)
 		movq ip(%rip), %rbx
+		movq %rbx, 8(%rcx) # format is n_params:8, address:8
+		addq $16, dp(%rip)
 
 		lea reloc(%rip), %rdx
 		add reloc_ptr(%rip), %rdx
@@ -801,9 +780,18 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movq %rcx, 8(%rdx)
 		addq $16, reloc_ptr(%rip)
 
-		movq %rbx, 8(%rcx) # format is n_params:8, address:8
-		addq $16, dp(%rip)
+		#mov prev_dp(%rip), %rsi
+		mov pending_fn(%rip), %rsi
+		test %rsi, %rsi
+		je ef_not_a_def
 
+		lea symbol_tbl(%rip), %rax
+		lea (%rsi,%rsi,2), %rsi
+		lea (%rax,%rsi,8), %rax
+		mov prev_dp(%rip), %rsi
+		mov %rsi, 16(%rax)
+
+		ef_not_a_def:
 		xor %rsi, %rsi
 
 		movsx prev_char(%rip), %rax
@@ -888,7 +876,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		ef_l_rsp:
 		lea reg_rsp_codes(%rip), %rbx
-		movl 28(%rbx), %ebx # 4*7=56
+		movl 28(%rbx), %ebx # 4*7=28
 		movl %ebx, (%rax) # mov offset(%rsp), %rax
 		movl %edi, 4(%rax)
 		add $8, %rax
@@ -929,6 +917,40 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		xor %rbx, %rbx
 		inc %rbx # functions count as literals
 		jmp ef_ret
+
+	ef_no_lambda:
+	movq $0, pending_fn(%rip) # If this is not a definition for a lambda
+	#(which is a special case to enable recursion), disable the early-registration
+	#mechanism
+
+	movsx accept_lgt(%rip), %ecx
+	mov define_str_lgt(%rip), %rdx
+	cmp %rcx, %rdx
+	jne ef_nodef
+	lea accept_buff(%rip), %rsi
+	lea define_str(%rip), %rdi
+	repe cmpsb
+	jz ef_def
+
+	ef_nodef:
+	movsx accept_lgt(%rip), %ecx
+	mov nop_str_lgt(%rip), %rdx
+	cmp %rcx, %rdx
+	jne ef_no_nop
+	lea accept_buff(%rip), %rsi
+	lea nop_str(%rip), %rdi
+	repe cmpsb
+	jz ef_nop
+
+	ef_no_nop:
+	movsx accept_lgt(%rip), %ecx
+	mov if_str_lgt(%rip), %rdx
+	cmp %rcx, %rdx
+	jne ef_incomplete
+	lea accept_buff(%rip), %rsi
+	lea if_str(%rip), %rdi
+	repe cmpsb
+	jne ef_incomplete
 
 	ef_if:
 		call skip_ws
@@ -1263,6 +1285,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		ef_redef:
 		mov n_symbols(%rip), %r12
+		mov %r12, pending_fn(%rip)
 		inc %r12
 		mov %r12, n_symbols(%rip)
 		dec %r12
@@ -1306,8 +1329,11 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		call skip_ws
 
 		mov prev_dp(%rip), %rsi
+		brk:
 		pop %rdi
 		mov %rsi, 16(%rdi)
+
+		movq $0, pending_fn(%rip)
 
 		lea char_type_tbl(%rip), %rbx
 		movsx prev_char(%rip), %rax
@@ -1332,7 +1358,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		lea data(%rip), %rdi
 		add %rdi, %rsi
 
-		mov (%rsi), %rdi
+got_fn:		mov (%rsi), %rdi
 		pushq 8(%rsi) # function address
 		pushq %rdi # arg count
 		pushq %rdi # arg count that will be used as counter
@@ -1351,14 +1377,14 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 			jb ef_push_rex
 
 			movb $0x50, (%rax) # push
-			movb -1(%rbx,%rdi), %cl # index is off by one since 1 arg = option 0
+			movb (%rbx,%rdi), %cl
 			addb %cl, (%rax) # register
 			inc %rax
 			jmp ef_end_pushloop
 
 			ef_push_rex:
 			movb $0x41, (%rax)
-			movb -1(%rbx,%rdi), %cl
+			movb (%rbx,%rdi), %cl
 			addb $0x50, %cl
 			movb %cl, 1(%rax) # push+rex register
 			add $2, %rax
@@ -1373,10 +1399,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		sub %rbx, %rax
 		movq %rax, ip(%rip)
 
-		pop %rcx
-
 		ef_loop:
-		push %rcx
 		call skip_ws
 
 		lea char_type_tbl(%rip), %rbx
@@ -1532,15 +1555,16 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		add $4, %r8
 
 	mov $8, %rdi
-	sub (%rsp), %rdi
-	add $8, %rsp
+	pop %r9
+	#sub (%rsp), %rdi
+	#add $8, %rsp
 	# cnt is on top of stack and we want 8 - cnt
 
 	lea reg_codes(%rip), %rbx
 	xor %rcx, %rcx
 
 	ef_poploop:
-		cmpb $8, %dil
+		test %r9, %r9
 		je ef_end
 		cmp $2, %rdi
 		jb ef_pop_rex
@@ -1559,7 +1583,8 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		add $2, %r8
 
 		ef_end_poploop:
-		incb %dil
+		dec %dil
+		dec %r9
 		jmp ef_poploop
 
 	ef_end:
@@ -1729,16 +1754,16 @@ comma_space: .ascii ", "
 colon_space: .ascii ": "
 
 reg_codes:
-# non-rex
-.byte 0b0 # rax
-.byte 0b1 # rcx
-.byte 0b10 # rdx
-.byte 0b11 # rbx
-.byte 0b110 # rdi
-.byte 0b111 # rsi
 # rex
-.byte 0b0 # r8
 .byte 0b1 # r9
+.byte 0b0 # r8
+# non-rex
+.byte 0b111 # rsi
+.byte 0b110 # rdi
+.byte 0b11 # rbx
+.byte 0b10 # rdx
+.byte 0b1 # rcx
+.byte 0b0 # rax
 
 mem_to_reg_codes:
 .byte 0x4c, 0x8b, 0x0c, 0x25, 0x00, 0x00, 0x00, 0x00 # mov 0x0, %r9
