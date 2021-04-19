@@ -1,5 +1,3 @@
-# Special notes: due to endianness, movw 0xc0ff, * is the correct sequence for inc %rbx, not ffc0.
-# Note2: xlatb can't be used anymore because the addresses of the tables are too far down in the program...
 .global _start
 
 .text
@@ -7,26 +5,22 @@
 _start:
 	xor %rsi, %rsi
 	call nextch
-
-	call skip_ws
-
 	xor %rsi, %rsi
 	call nextch
 
-	movb form(%rip), %al
+	call skip_ws
+
+brkh:	movb form(%rip), %al
 	call expect
 
 	main_loop:
 	call skip_ws
 
-	movb this_char(%rip), %al
+brkm1:	movb prev_char(%rip), %al
 	cmpb $3, %al # EOT
 	je main_end
 
-	xor %rsi, %rsi
-	call nextch
-
-	movb form(%rip), %al
+brkm:	movb form(%rip), %al
 	call expect
 	jmp main_loop
 
@@ -106,7 +100,7 @@ accept:
 skip_ws:
 	sw_loop:
 		lea char_class_tbl(%rip), %rbx
-		movsx this_char(%rip), %rax
+		movsx prev_char(%rip), %rax
 		movb (%rbx,%rax), %al
 		cmpb cc_white(%rip), %al
 		jne sw_done
@@ -220,8 +214,10 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 
 	as_done: # only happens when final squote is found, so always good
 		pop %rcx
+
 		xor %rsi, %rsi
 		call nextch # skip over final squote
+
 		xor %rax, %rax
 		xor %rbx, %rbx
 		inc %rbx
@@ -408,15 +404,17 @@ accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd
 			jmp ae_end
 
 		ae_accept:
-			mov prev_char(%rip), %r14
+			movsx prev_char(%rip), %r14
 			movb %r14b, (%r13)
 			inc %r13
 			inc %r12
 			push %rcx
 			push %r12
 			push %r13
+
 			xor %rsi, %rsi
 			call nextch
+
 			xor %r14, %r14
 			pop %r13
 			pop %r12
@@ -462,6 +460,8 @@ accept_atom:
 	movb (%rbx,%rax), %al
 	cmpb ct_none(%rip), %al
 	je aa_var
+	cmpb ct_squote(%rip), %al
+	je aa_lit
 
 	xor %rax, %rax
 	inc %rax # no good, this is a special character!
@@ -496,9 +496,7 @@ accept_expr:
 		movsx form(%rip), %rax
 
 	ae2_after:
-		#push %rbx
 		call accept
-		#pop %rbx # %rbx is 1 if this was an atom, 0  if it was a form (i.e. a function call of some sort)
 
 		ret # Return whatever the returned error code was (via %rax)
 
@@ -518,7 +516,7 @@ find_symbol: # Returns matched code address on %rsi, %rax is error code
 		cmp %rbx, %rcx
 		jne fs_cl_tail
 
-		lea 16(%rdi), %r12
+		mov 16(%rdi), %r12
 		mov (%rdi), %rdi # This points to a cell: [key, key-length, code address], from which we want [key]
 		lea accept_buff(%rip), %rsi
 		repe cmpsb
@@ -532,9 +530,9 @@ find_symbol: # Returns matched code address on %rsi, %rax is error code
 		jmp fs_after_cl
 
 	fs_done_cl:
-	#mov 16(%r12), %rsi
-	mov (%r12), %rsi
+	mov %r12, %rsi
 	pop %rcx
+
 	fs_after_cl:
 	test %rcx, %rcx
 	je fs_unrecognized
@@ -626,21 +624,21 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	cmpb ct_opar(%rip), %al
 	jne ef_incomplete
 
+	xor %rsi, %rsi
+	call nextch # skip over '('
 	call skip_ws
 
-	xor %rsi, %rsi
-	call nextch
 	xor %rax, %rax
 	movb expr(%rip), %al
 	call accept
-	# The required invariants are:
-	# %rax is not 1 if it succeeded;
-	# %rsi contains the address for the call
-	# %rbx indicates if it's a form (i.e. a call) or something else
 
-	dec %rax # check for code 1 as opposed to 0 (good) or 2 (var exists and is unbound -- good)
+brkhere:	dec %rax # check for code 1 as opposed to 0 (good) or 2 (var exists and is unbound -- good)
 	test %rax, %rax
 	je ef_incomplete
+
+	dec %rax
+	test %rax, %rax
+	jne ef_call # if it is 0, then the code was 2, so it can't be a call. Otherwise it's either invalid or a call.
 
 	test %rbx, %rbx # 0 = form, 1 = otherwise (assume var)
 	je ef_incomplete # XXX: not yet accepted (basically just need to move ret to r10 and call or similar)
@@ -679,26 +677,12 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	movsx accept_lgt(%rip), %ecx
 	mov lambda_str_lgt(%rip), %rdx
 	cmp %rcx, %rdx
-	jne ef_no_lambda
+	jne ef_incomplete
 	lea accept_buff(%rip), %rsi
 	lea lambda_str(%rip), %rdi
 	repe cmpsb
-	jz ef_lambda
-
-	ef_no_lambda:
-	# Potential TODO to support 1st-class functions
-	#call find_env
-	#test %rax, %rax
-	#jnz ef_no_env1
-
-	#jmp ef_call
-
-	#ef_no_env1:
-	call find_symbol # returns data address on rsi
-	test %rax, %rax
-	jnz ef_unrecognized
-
-	jmp ef_call
+	jne ef_incomplete
+	# if this fails, it's not a reserved word and not a bound function, so it's broken.
 
 	ef_lambda:
 		mov ip(%rip), %rax
@@ -715,8 +699,6 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		add $5, ip(%rip)
 
 		call skip_ws
-		xor %rsi, %rsi
-		call nextch
 
 		movsx prev_char(%rip), %rax
 		lea char_type_tbl(%rip), %rbx
@@ -724,6 +706,9 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		cmpb ct_opar(%rip), %al
 		jne ef_incomplete
+
+		xor %rsi, %rsi
+		call nextch # skip '('
 
 brk5:		sub $0x88, %rsp # format is (string:8, str lgt:8). Last entry is (prev env:8).
 		mov curr_env(%rip), %rbx
@@ -733,20 +718,7 @@ brk5:		sub $0x88, %rsp # format is (string:8, str lgt:8). Last entry is (prev en
 		mov $8, %rcx # max 8 args
 
 		ef_l_argloop:
-			movsx prev_char(%rip), %rax
-			lea char_type_tbl(%rip), %rbx
-			movb (%rbx, %rax), %al
-
-			cmpb ct_cpar(%rip), %al
-			je ef_l_argdone
-
-			push %rcx
-
 			call skip_ws
-			xor %rsi, %rsi
-			call nextch
-
-			pop %rcx
 
 			movsx prev_char(%rip), %rax
 			lea char_type_tbl(%rip), %rbx
@@ -806,6 +778,13 @@ brk2:			mov $0x80, %rdi
 		jmp ef_incomplete # failed to jump to ef_l_argdone before count was done
 
 		ef_l_argdone:
+		# skip over ')' after the args
+		push %rcx
+		xor %rsi, %rsi
+		call nextch
+		call skip_ws
+		pop %rcx
+
 		mov $8, %rbx
 		sub %rcx, %rbx # rbx = param count
 
@@ -825,9 +804,7 @@ brk2:			mov $0x80, %rdi
 		movq %rbx, 8(%rcx) # format is n_params:8, address:8
 		addq $16, dp(%rip)
 
-		call skip_ws
 		xor %rsi, %rsi
-		call nextch
 
 		movsx prev_char(%rip), %rax
 		lea char_type_tbl(%rip), %rbx
@@ -837,12 +814,11 @@ brk2:			mov $0x80, %rdi
 		je ef_incomplete # no expr in the lambda
 
 brk0:		xor %rax, %rax
-		movb expr(%rip), %al
+		movsx expr(%rip), %rax
 		call expect
 
-		lea program(%rip), %rax
-		addq ip(%rip), %rax
-
+brkhh:		lea program(%rip), %rax
+		add ip(%rip), %rax
 		test %rbx, %rbx # 0 = call
 		jz ef_l_skipmov
 
@@ -946,22 +922,18 @@ brk4:		movq curr_env(%rip), %rcx
 		sub %rcx, %rax
 		movl %eax, (%rbx)
 
-		xor %rsi, %rsi
-		call nextch # skip over final ')'
-
-		mov prev_dp(%rip), %rsi
+		lea data(%rip), %rsi
+		addq prev_dp(%rip), %rsi
 
 		xor %rax, %rax
 		xor %rbx, %rbx
 		inc %rbx # functions count as literals
-		ret
+		jmp ef_ret
 
 	ef_if:
 		call skip_ws
-		xor %rsi, %rsi
-		call nextch
 
-		movb expr(%rip), %al
+		movsx expr(%rip), %rax
 		call expect
 
 		mov ip(%rip), %rax
@@ -1035,7 +1007,7 @@ brk4:		movq curr_env(%rip), %rcx
 		movb $0xc0, 2(%rax) # test %rax, %rax
 		add $3, %rax
 		movb $0x0f, (%rax)
-		movb $0x85, 1(%rax) # jne [4 bytes offset]
+		movb $0x84, 1(%rax) # je [4 bytes offset]
 		add $2, %rax
 
 		# save the jump to inject the false path's address
@@ -1047,10 +1019,8 @@ brk4:		movq curr_env(%rip), %rcx
 		mov %rax, ip(%rip)
 
 		call skip_ws
-		xor %rsi, %rsi
-		call nextch
 
-		movb expr(%rip), %al
+		movsx expr(%rip), %rax
 		call expect
 
 		lea program(%rip), %rax
@@ -1147,10 +1117,8 @@ brk4:		movq curr_env(%rip), %rcx
 		mov %rax, ip(%rip)
 
 		call skip_ws
-		xor %rsi, %rsi
-		call nextch
 
-		movb expr(%rip), %al
+		movsx expr(%rip), %rax
 		call expect
 
 		lea program(%rip), %rax
@@ -1246,8 +1214,7 @@ brk4:		movq curr_env(%rip), %rcx
 		mov %rax, ip(%rip)
 
 		call skip_ws
-		xor %rsi, %rsi
-		call nextch
+
 		xor %rax, %rax
 		movb prev_char(%rip), %al
 		lea char_type_tbl(%rip), %rbx
@@ -1258,7 +1225,7 @@ brk4:		movq curr_env(%rip), %rcx
 
 		xor %rax, %rax
 		xor %rbx, %rbx
-		ret
+		jmp ef_ret
 
 	ef_nop: # just move the prev_ip forward, no actual code is output here
 		mov ip(%rip), %rax
@@ -1266,38 +1233,29 @@ brk4:		movq curr_env(%rip), %rcx
 		mov %rax, %rsi
 		push %rsi
 
-		movb prev_char(%rip), %al
+		call skip_ws
+
+		movsx prev_char(%rip), %rax
 		lea char_type_tbl(%rip), %rsi
 		movb (%rax,%rsi), %al
 		cmpb ct_cpar(%rip), %al
 		je ef_end_nop
 
-		call skip_ws
-		xor %rsi, %rsi
-		call nextch
-
-		movb prev_char(%rip), %al
-		lea char_type_tbl(%rip), %rsi
-		movb (%rax,%rsi), %al
-		
-		cmpb ct_cpar(%rip), %al
-		jne ef_incomplete
+		jmp ef_incomplete
 
 		ef_end_nop:
 		pop %rsi
 		xor %rax, %rax
 		xor %rbx, %rbx
-		ret
+		jmp ef_ret
 
 	ef_def: # handle 'define' special form
 		call skip_ws
-		xor %rsi, %rsi
-		call nextch
 
 		movsx var(%rip), %rax
 		call accept
 
-		test %rax, %rax
+brk00:		test %rax, %rax
 		jz ef_redef # symbol exist so it's being redefined
 
 		cmp $2, %rax # symbol does not exist, so a new one is being defined (this is OK, too)
@@ -1316,7 +1274,7 @@ brk4:		movq curr_env(%rip), %rcx
 		mov %rcx, %rsi
 		call malloc
 
-		test %rax, %rax
+brk02:		test %rax, %rax
 		jz err_malloc_failed
 		# mov %rdi, %rdi
 		mov %rdi, %r13
@@ -1335,17 +1293,17 @@ brk4:		movq curr_env(%rip), %rcx
 		movsx accept_lgt(%rip), %rcx
 		movq %rcx, 8(%rdi)
 		# save str ptr in symbol_tbl
-		movq %r13, (%rdi)
+brkXX:		movq %r13, (%rdi)
 
 		call skip_ws
-		xor %rsi, %rsi
-		call nextch
 
 		movsx expr(%rip), %rax
 		call accept
-
-		test %rax, %rax
+	
+brk01:		test %rax, %rax
 		jne ef_incomplete
+
+		call skip_ws
 
 		mov prev_dp(%rip), %rsi
 		pop %rdi
@@ -1358,32 +1316,20 @@ brk4:		movq curr_env(%rip), %rcx
 		cmpb ct_cpar(%rip), %al
 		je ef_def_done
 
-		call skip_ws
-		xor %rsi, %rsi
-		call nextch
-		lea char_type_tbl(%rip), %rbx
-		movsx prev_char(%rip), %rax
-		movb (%rbx,%rax), %al
-
-		cmpb ct_cpar(%rip), %al
-		jne ef_incomplete
+		jmp ef_incomplete
 
 		ef_def_done:
 		xor %rax, %rax
 		xor %rbx, %rbx
-		ret
+		jmp ef_ret
 
 	ef_call:
-		# Potential TODO: accept functions in lambdas by this mechanism
-		# This is only reached right after a find_symbol
-
 		mov ip(%rip), %rax
 		mov %rax, prev_ip(%rip)
 		lea program(%rip), %rax
 		add ip(%rip), %rax
 
-		lea data(%rip), %rdi # a function is represented in data as [n_args, address]
-		add %rdi, %rsi
+		mov %rdi, %rsi
 
 		mov (%rsi), %rdi
 		pushq 8(%rsi) # function address
@@ -1427,17 +1373,8 @@ brk4:		movq curr_env(%rip), %rcx
 		movq %rax, ip(%rip)
 
 		ef_loop:
-		lea char_type_tbl(%rip), %rbx
-		movsx prev_char(%rip), %rax
-		movb (%rbx,%rax), %al
-
-		cmpb ct_cpar(%rip), %al
-		je ef_postloop
-
 		call skip_ws
 
-		xor %rsi, %rsi
-		call nextch
 		lea char_type_tbl(%rip), %rbx
 		movsx prev_char(%rip), %rax
 		movb (%rbx,%rax), %al
@@ -1471,6 +1408,8 @@ brk4:		movq curr_env(%rip), %rcx
 
 	ef_postloop:
 	pop %rcx # decremented value in above loop, i.e. 0 -- drop
+	lea program(%rip), %r8
+	addq ip(%rip), %r8
 
 	mov (%rsp), %rax # arg count
 	mov $8, %rcx
@@ -1483,7 +1422,6 @@ brk4:		movq curr_env(%rip), %rcx
 	# offset from code tables is as much as "leftover" count
 	# i.e. inverted index
 	lea reg_imm_codes(%rip), %r13
-	lea reg_shuffle_codes(%rip), %r14
 	lea reloc(%rip), %r9
 	add reloc_ptr(%rip), %r9
 
@@ -1536,12 +1474,18 @@ brk4:		movq curr_env(%rip), %rcx
 
 		ef_env_direct:
 		# This was directly in a reg whose index is in %rsi, emit the mov
+		mov $7, %rax
+		sub %rsi, %rax
+		mov %rax, %rsi
 		lea reg_reg_codes(%rip), %rax
 		lea (%rsi,%rsi,2), %rsi
-		mov (%rsi,%rax), %rax # address is reg_reg_codes + 3*rsi + rcx
-		movb %al, (%r8)
-		inc %rax
-		movw %ax, 1(%r8)
+		lea (%rcx,%rcx,2), %rcx
+		lea (%rsi,%rcx,8), %rsi
+		lea (%rsi,%rax), %rax # address is reg_reg_codes + 3*rsi + 3*8*rcx XXX
+		movw (%rax), %cx
+		movw %cx, (%r8)
+		movb 2(%rax), %cl
+		movb %cl, 2(%r8)
 		add $3, %r8
 		jmp ef_arg_processed
 
@@ -1618,8 +1562,8 @@ brk4:		movq curr_env(%rip), %rcx
 		lea program(%rip), %r9
 		sub %r9, %r8
 		movq %r8, ip(%rip)
-
 		xor %rax, %rax
+		xor %rbx, %rbx
 		jmp ef_ret
 
 	ef_incomplete:
@@ -1635,7 +1579,15 @@ brk4:		movq curr_env(%rip), %rcx
 		#jmp ef_ret
 
 	ef_ret:
-		xor %rbx, %rbx
+		push %rbx
+		push %rax
+
+		call skip_ws
+		xor %rsi, %rsi
+		call nextch # skip over final ')'
+
+		pop %rax
+		pop %rbx
 		ret
 
 noaccept:
@@ -1772,8 +1724,6 @@ jmp_val2: .quad 0
 comma_space: .ascii ", "
 colon_space: .ascii ": "
 
-n_symbols: .quad 1
-
 reg_codes:
 # non-rex
 .byte 0b0 # rax
@@ -1805,16 +1755,6 @@ reg_to_mem_codes:
 .byte 0x48, 0x89, 0x14, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %rdx, 0x0
 .byte 0x48, 0x89, 0x0c, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %rcx, 0x0
 .byte 0x48, 0x89, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %rax, 0x0
-
-reg_shuffle_codes:
-.byte 0b01001001, 0b10001001, 0b11000001 # rax -> r9
-.byte 0b01001001, 0b10001001, 0b11000000 # rax -> r8
-.byte 0b01001000, 0b10001001, 0b11000111 # rax -> rsi
-.byte 0b01001000, 0b10001001, 0b11000110 # rax -> rdi
-.byte 0b01001000, 0b10001001, 0b11000011 # rax -> rbx
-.byte 0b01001000, 0b10001001, 0b11000010 # rax -> rdx
-.byte 0b01001000, 0b10001001, 0b11000001 # rax -> rcx
-.byte 0b01001000, 0b10001001, 0b11000000 # rax -> rax, in fact should never be generated
 
 reg_reg_codes: # idx = source * 3 + dest
 .byte 0x49, 0x89, 0xc1 # r9 -> r9

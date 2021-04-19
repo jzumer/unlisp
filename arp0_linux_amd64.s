@@ -56,21 +56,21 @@ nextch: # save the previous char, load the next char, fix linum/charnum based on
 	movb (%rbx,%rax), %al
 
 	cmpb ct_nl(%rip), %al
-	jne ef_next
+	jne nc_next
 
 	incq linum(%rip)
 	movq $0, charnum(%rip)
 
 	xor %rsi, %rsi
 
-	ef_next:
+	nc_next:
 	cmpb ct_comment(%rip), %al
-	jne ef_end
+	jne nc_end
 
 	xor %rsi, %rsi
 	inc %rsi
 
-	ef_end:
+	nc_end:
 	test %rsi, %rsi
 	jne nextch
 	ret
@@ -177,7 +177,7 @@ malloc: # Expects allocation amount in bytes on %rsi; bytes obtained returned in
 prev_char: .ascii "\0"
 this_char: .ascii "\0"
 
-charnum: .quad -2
+charnum: .quad 0
 linum: .quad 0
 
 test_msg: .ascii "Hello, world"

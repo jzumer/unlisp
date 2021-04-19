@@ -13,6 +13,7 @@
 .global reloc_ptr
 
 .global symbol_tbl
+.global n_symbols
 
 .global define_str
 .global define_str_lgt
@@ -43,6 +44,8 @@ nop_str: .ascii "nop"
 nop_str_lgt: .quad . - nop_str
 if_str: .ascii "if"
 if_str_lgt: .quad . - if_str
+
+n_symbols: .quad 1
 
 symbol_tbl:
 .quad print_str, print_str_lgt - print_str, print_code_data - data

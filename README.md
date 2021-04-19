@@ -10,9 +10,7 @@ There is no use of C or of external libraries whatsoever in this project.
 It was created as a learning project to better understand a theoretical bootstrap sequence from assembly language up: how small can a practical (for some definition) language be? Which parts are trickier or easier? Which parts take up more code (in development time and in instructions)?
 In addition, it was a way to learn about ELF and machine code and to get more familiar with x86\_64.
 
-In principle, only more primitives need be added to make it capable of self-hosting. This is left as an exercise to the reader ;)
-
-Provided here for those who might grasp something from it.
+Provided here for those who might grasp something from it. Note that the code quality is very low, this is not a good example of an x86\_64 codebase.
 
 ## Example
 
