@@ -10,17 +10,17 @@ _start:
 
 	call skip_ws
 
-brkh:	movb form(%rip), %al
+	movb form(%rip), %al
 	call expect
 
 	main_loop:
 	call skip_ws
 
-brkm1:	movb prev_char(%rip), %al
+	movb prev_char(%rip), %al
 	cmpb $3, %al # EOT
 	je main_end
 
-brkm:	movb form(%rip), %al
+	movb form(%rip), %al
 	call expect
 	jmp main_loop
 
@@ -558,7 +558,7 @@ find_env: # Like find_symbol but on the environment, all the way to the root.
 		test %rcx, %rcx
 		je fe_unrecognized
 
-brk1:		mov (%rcx), %rax
+		mov (%rcx), %rax
 		test %rax, %rax
 		je fe_next_env
 
@@ -632,7 +632,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	movb expr(%rip), %al
 	call accept
 
-brkhere:	dec %rax # check for code 1 as opposed to 0 (good) or 2 (var exists and is unbound -- good)
+	dec %rax # check for code 1 as opposed to 0 (good) or 2 (var exists and is unbound -- good)
 	test %rax, %rax
 	je ef_incomplete
 
@@ -710,7 +710,7 @@ brkhere:	dec %rax # check for code 1 as opposed to 0 (good) or 2 (var exists and
 		xor %rsi, %rsi
 		call nextch # skip '('
 
-brk5:		sub $0x88, %rsp # format is (string:8, str lgt:8). Last entry is (prev env:8).
+		sub $0x88, %rsp # format is (string:8, str lgt:8). Last entry is (prev env:8).
 		mov curr_env(%rip), %rbx
 		mov %rbx, 0x80(%rsp)
 		mov %rsp, curr_env(%rip)
@@ -759,7 +759,7 @@ brk5:		sub $0x88, %rsp # format is (string:8, str lgt:8). Last entry is (prev en
 			pop %rcx
 			push %rcx
 
-brk2:			mov $0x80, %rdi
+			mov $0x80, %rdi
 			lea (,%rcx,8), %rdx
 			lea (%rdx,%rdx), %rdx
 			sub %rdi, %rdx
@@ -813,11 +813,11 @@ brk2:			mov $0x80, %rdi
 		cmpb ct_cpar(%rip), %al
 		je ef_incomplete # no expr in the lambda
 
-brk0:		xor %rax, %rax
+		xor %rax, %rax
 		movsx expr(%rip), %rax
 		call expect
 
-brkhh:		lea program(%rip), %rax
+		lea program(%rip), %rax
 		add ip(%rip), %rax
 		test %rbx, %rbx # 0 = call
 		jz ef_l_skipmov
@@ -825,7 +825,7 @@ brkhh:		lea program(%rip), %rax
 		dec %rbx # 1 = lit (2 = env)
 		jz ef_l_literal
 
-brk:		inc %rdi
+		inc %rdi
 		jz ef_l_reg
 		dec %rdi
 		jmp ef_l_rsp
@@ -903,16 +903,16 @@ brk:		inc %rdi
 		addq $16, reloc_ptr(%rip)
 
 		ef_l_skipmov:
-		# ??. implement recursion somehow? either jmp1 is filled and def fills it
-		#	or we receive our symbol and patch it ourselves at start.
-
 		# Teardown env; note that this leaks the string we had allocated...
+		movb $0xc3, (%rax) # ret
+		inc %rax
+
 		mov %rax, %rbx
 		lea program(%rip), %rcx
 		sub %rcx, %rbx
 		movq %rbx, ip(%rip)
 
-brk4:		movq curr_env(%rip), %rcx
+		movq curr_env(%rip), %rcx
 		movq 0x80(%rcx), %rcx
 		movq %rcx, curr_env(%rip)
 		add $0x88, %rsp
@@ -1255,7 +1255,7 @@ brk4:		movq curr_env(%rip), %rcx
 		movsx var(%rip), %rax
 		call accept
 
-brk00:		test %rax, %rax
+		test %rax, %rax
 		jz ef_redef # symbol exist so it's being redefined
 
 		cmp $2, %rax # symbol does not exist, so a new one is being defined (this is OK, too)
@@ -1274,7 +1274,7 @@ brk00:		test %rax, %rax
 		mov %rcx, %rsi
 		call malloc
 
-brk02:		test %rax, %rax
+		test %rax, %rax
 		jz err_malloc_failed
 		# mov %rdi, %rdi
 		mov %rdi, %r13
@@ -1293,14 +1293,14 @@ brk02:		test %rax, %rax
 		movsx accept_lgt(%rip), %rcx
 		movq %rcx, 8(%rdi)
 		# save str ptr in symbol_tbl
-brkXX:		movq %r13, (%rdi)
+		movq %r13, (%rdi)
 
 		call skip_ws
 
 		movsx expr(%rip), %rax
 		call accept
 	
-brk01:		test %rax, %rax
+		test %rax, %rax
 		jne ef_incomplete
 
 		call skip_ws
@@ -1329,7 +1329,8 @@ brk01:		test %rax, %rax
 		lea program(%rip), %rax
 		add ip(%rip), %rax
 
-		mov %rdi, %rsi
+		lea data(%rip), %rdi
+		add %rdi, %rsi
 
 		mov (%rsi), %rdi
 		pushq 8(%rsi) # function address
@@ -1372,7 +1373,10 @@ brk01:		test %rax, %rax
 		sub %rbx, %rax
 		movq %rax, ip(%rip)
 
+		pop %rcx
+
 		ef_loop:
+		push %rcx
 		call skip_ws
 
 		lea char_type_tbl(%rip), %rbx
