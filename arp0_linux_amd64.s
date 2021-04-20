@@ -8,7 +8,7 @@
 
 .global nextch
 
-.global malloc
+.global my_malloc
 #.global free Not actually necessary for bootstrap
 
 .global quit
@@ -151,27 +151,16 @@ quit: # expects the error code on %rdi
 	syscall
 	ret
 
-malloc: # Expects allocation amount in bytes on %rsi; bytes obtained returned in %rax, memstart in %rsi
-	mov heap_start(%rip), %rax
-	test %rax, %rax
-	jnz m_alloc_more
-
-	mov $12, %rax
-	xor %rdi, %rdi
+my_malloc: # Expects allocation amount in bytes on %rsi; bytes obtained returned in %rax
+	mov $0x22, %r10 # MAP_ANONYMOUS | MAP_PRIVATE
+	xor %r8, %r8 # fd = 0
+	xor %r9, %r9 # offset = 0
+	xor %rdi, %rdi # no ptr input
+	mov $0x2, %rdx # read-write
+	mov $9, %rax
 	syscall
-	mov %rax, heap_start(%rip)
-
-	m_alloc_more:
-		mov $12, %rax
-		mov %rsi, %rdi
-		add heap_start(%rip), %rdi
-		syscall
-
-		mov %rax, %rsi
-		sub heap_start(%rip), %rax
-		add %rax, heap_start(%rip) # We don't dealloc in this program so no extra bookkeeping needed
-
-		ret
+	mov %rax, %rdi
+	ret
 
 .data
 prev_char: .ascii "\0"

@@ -1,5 +1,4 @@
 .global _start
-# XXX TODO: recursion currently segfaults
 
 .text
 
@@ -526,16 +525,11 @@ find_symbol: # Returns matched code address on %rsi, %rax is error code
 		dec %rcx
 		test %rcx, %rcx
 		jne fs_callloop
-		jmp fs_after_cl
+		jmp fs_unrecognized
 
 	fs_done_cl:
 	mov %r12, %rsi
 	pop %rcx
-
-	fs_after_cl:
-	test %rcx, %rcx
-	je fs_unrecognized
-
 	xor %rax, %rax
 	ret
 
@@ -663,6 +657,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		mov dp(%rip), %rsi
 		mov %rsi, 16(%rax)
 		pushq %rsi
+		movq $0, pending_fn(%rip)
 
 		ef_not_a_def:
 		mov ip(%rip), %rax
@@ -729,12 +724,12 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 			# on accept_buff we now have the varname.
 			# Put the var in the env and set its mapping to the next available register.
 			movsx accept_lgt(%rip), %rsi
-			call malloc
+			call my_malloc
 
 			pop %rcx
 
-			test %rax, %rax
-			jz err_malloc_failed
+			cmp $0, %rax
+m2:			jb err_malloc_failed
 
 			push %rcx
 
@@ -1289,19 +1284,17 @@ poppy:		pop %rsi
 		ef_redef:
 		mov n_symbols(%rip), %r12
 		mov %r12, pending_fn(%rip)
-		inc %r12
-		mov %r12, n_symbols(%rip)
-		dec %r12
+		incq n_symbols(%rip)
 
 		movsx accept_lgt(%rip), %ecx
 		push %rcx
 
 		# malloc new str
 		mov %rcx, %rsi
-		call malloc
+		call my_malloc
 
-		test %rax, %rax
-		jz err_malloc_failed
+		cmp $0, %rax
+m1:		jb err_malloc_failed
 		# mov %rdi, %rdi
 		mov %rdi, %r13
 
@@ -1336,7 +1329,7 @@ poppy:		pop %rsi
 		pop %rsi
 
 		#mov prev_dp(%rip), %rsi
-		pop %rdi
+problem:		pop %rdi
 		mov %rsi, 16(%rdi)
 
 		movq $0, pending_fn(%rip)
@@ -1669,7 +1662,7 @@ expect_error:
 
 err_malloc_failed:
 	lea malloc_error(%rip), %rsi
-	lea malloc_error_lgt(%rip), %rdx
+	mov $malloc_error_lgt, %rdx
 	call println
 
 	xor %rdi, %rdi
