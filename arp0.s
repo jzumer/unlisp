@@ -3,9 +3,7 @@
 .text
 
 _start:
-	xor %rsi, %rsi
 	call nextch
-	xor %rsi, %rsi
 	call nextch
 
 	call skip_ws
@@ -105,7 +103,6 @@ skip_ws:
 		cmpb cc_white(%rip), %al
 		jne sw_done
 
-		xor %rsi, %rsi
 		call nextch
 		jmp sw_loop
 	
@@ -128,7 +125,6 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 
 	as_loop:
 		push %rcx
-		xor %rsi, %rsi
 		call nextch
 
 		lea char_class_tbl(%rip), %rbx
@@ -155,7 +151,6 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		cmpb ct_sesc(%rip), %al
 		jne as_esc_squote
 
-		xor %rsi, %rsi
 		call nextch
 		movb $'\\', prev_char(%rip)
 		jmp as_accept
@@ -164,7 +159,6 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		cmpb ct_squote(%rip), %al
 		jne as_esc_nl
 
-		xor %rsi, %rsi
 		call nextch
 		movb $'"', prev_char(%rip)
 		jmp as_accept
@@ -174,7 +168,6 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		cmpb $'n', %al
 		jne as_esc_tab
 
-		xor %rsi, %rsi
 		call nextch
 		movb $'\n', prev_char(%rip)
 		jmp as_accept
@@ -183,7 +176,6 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		cmpb $'t', %al
 		jne as_esc_nul
 
-		xor %rsi, %rsi
 		call nextch
 		movb $'\t', prev_char(%rip)
 		jmp as_accept
@@ -192,7 +184,6 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 		cmpb $'0', %al
 		jne as_esc_squote
 
-		xor %rsi, %rsi
 		call nextch
 		movb $'\0', prev_char(%rip)
 		jmp as_accept
@@ -215,7 +206,6 @@ accept_string: # A string is squote-delimited. prevchar should be the string-quo
 	as_done: # only happens when final squote is found, so always good
 		pop %rcx
 
-		xor %rsi, %rsi
 		call nextch # skip over final squote
 
 		xor %rax, %rax
@@ -237,7 +227,6 @@ accept_int:
 	jmp ai_accept
 
 	ai_loop:
-		xor %rsi, %rsi
 		call nextch
 		lea char_class_tbl(%rip), %rbx
 		movsx prev_char(%rip), %rax
@@ -410,7 +399,6 @@ accept_var: # A var is a sequence of printables. Numbers are allowed only in 2nd
 			push %r12
 			push %r13
 
-			xor %rsi, %rsi
 			call nextch
 
 			xor %r14, %r14
@@ -578,7 +566,7 @@ find_env: # Like find_symbol but on the environment, all the way to the root.
 			inc %r13
 
 			cmp $-1, %r12
-			jne fe_callloop
+			je fe_callloop
 
 			add $8, %r12
 			jmp fe_callloop
@@ -616,7 +604,6 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	cmpb ct_opar(%rip), %al
 	jne ef_incomplete
 
-	xor %rsi, %rsi
 	call nextch # skip over '('
 	call skip_ws
 
@@ -633,7 +620,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	jne ef_call # if it is 0, then the code was 2, so it can't be a call. Otherwise it's either invalid or a call.
 
 	test %rbx, %rbx # 0 = form, 1 = otherwise (assume var)
-	je ef_incomplete # XXX: not yet accepted (basically just need to move ret to r10 and call or similar)
+	je ef_incomplete
 
 	cld
 	movsx accept_lgt(%rip), %ecx
@@ -644,7 +631,6 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	lea lambda_str(%rip), %rdi
 	repe cmpsb
 	jne ef_no_lambda
-	# if this fails, it's not a reserved word and not a bound function, so it's broken.
 
 	ef_lambda:
 		mov pending_fn(%rip), %rsi
@@ -656,10 +642,15 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		lea (%rax,%rsi,8), %rax
 		mov dp(%rip), %rsi
 		mov %rsi, 16(%rax)
-		pushq %rsi
+		push %rsi
 		movq $0, pending_fn(%rip)
+		jmp ef_after_def
 
 		ef_not_a_def:
+		mov dp(%rip), %rsi
+		push %rsi
+
+		ef_after_def:
 		mov ip(%rip), %rax
 		mov %rax, prev_ip(%rip)
 		lea program(%rip), %rax
@@ -682,7 +673,6 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		cmpb ct_opar(%rip), %al
 		jne ef_incomplete
 
-		xor %rsi, %rsi
 		call nextch # skip '('
 
 		mov $8, %rcx # format is (string:8, str lgt:8). Last entry is (prev env:8).
@@ -729,7 +719,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 			pop %rcx
 
 			cmp $0, %rax
-m2:			jb err_malloc_failed
+			jb err_malloc_failed
 
 			push %rcx
 
@@ -742,7 +732,7 @@ m2:			jb err_malloc_failed
 			pop %rcx
 			push %rcx
 
-put_var:			mov $0x80, %rdi
+			mov $0x80, %rdi
 			lea (,%rcx,8), %rdx
 			lea (%rdx,%rdx), %rdx
 			sub %rdx, %rdi
@@ -763,7 +753,6 @@ put_var:			mov $0x80, %rdi
 		ef_l_argdone:
 		# skip over ')' after the args
 		push %rcx
-		xor %rsi, %rsi
 		call nextch
 		call skip_ws
 		pop %rcx
@@ -795,7 +784,6 @@ put_var:			mov $0x80, %rdi
 		cmpb ct_cpar(%rip), %al
 		je ef_incomplete # no expr in the lambda
 
-		xor %rax, %rax
 		movsx expr(%rip), %rax
 		call expect
 
@@ -847,10 +835,10 @@ put_var:			mov $0x80, %rdi
 		lea reg_reg_codes(%rip), %rbx
 		# rsi codes are actually backward compared to the convention, so flip it first
 		mov %rsi, %rdi
-		mov $8, %rsi
+		mov $7, %rsi
 		sub %rdi, %rsi
 		lea (%rsi,%rsi,2), %rsi
-		lea 21(%rbx,%rsi), %rbx # 3*7 = 21
+		lea 168(%rbx,%rsi), %rbx # 3*7*8 = 21
 		movw (%rbx), %di
 		movw %di, (%rax)
 		add $2, %rax
@@ -871,6 +859,9 @@ put_var:			mov $0x80, %rdi
 		jmp ef_l_reloc
 
 		ef_l_rsp:
+		# don't forget the environment offset to account for calls causing push's along the path
+		add env_offset(%rip), %rdi
+		lea (,%rdi,8), %rdi
 		lea reg_rsp_codes(%rip), %rbx
 		movl 28(%rbx), %ebx # 4*7=28
 		movl %ebx, (%rax) # mov offset(%rsp), %rax
@@ -903,8 +894,7 @@ put_var:			mov $0x80, %rdi
 		sub %rcx, %rax
 		movl %eax, (%rbx)
 
-		#mov prev_dp(%rip), %rsi
-poppy:		pop %rsi
+		pop %rsi
 
 		xor %rax, %rax
 		xor %rbx, %rbx
@@ -980,8 +970,12 @@ poppy:		pop %rsi
 		jmp ef_if_from_rsp_go
 
 		ef_if_from_mem_doreg:
+		mov $7, %rbx
+		sub %rsi, %rbx
+		mov %rbx, %rsi
 		lea reg_reg_codes(%rip), %rbx
-		lea 21(%rbx,%rsi), %rbx # 3*7 = 21
+		lea (%rsi,%rsi,2), %rsi
+		lea 168(%rbx,%rsi), %rbx # 3*7*8 = 168; + 3*rsi
 		movw (%rbx), %di
 		movw %di, (%rax)
 		add $2, %rax
@@ -1000,11 +994,13 @@ poppy:		pop %rsi
 		jmp ef_if_do_reloc0
 
 		ef_if_from_rsp_go:
+		# don't forget the environment offset to account for calls causing push's along the path
 		lea reg_rsp_codes(%rip), %rbx
-		movl 28(%rbx), %ebx # 4*7=56
+		movl 28(%rbx), %ebx # 4*7=28
 		movl %ebx, (%rax) # mov offset(%rsp), %rax
 		mov $8, %rbx
 		sub %rdi, %rbx
+		add env_offset(%rip), %rbx
 		lea 8(,%rbx,8), %rdi # +8 because we `push rax` to start with
 		movl %edi, 4(%rax)
 		add $8, %rax
@@ -1020,6 +1016,10 @@ poppy:		pop %rsi
 		addq $16, reloc_ptr(%rip)
 
 		ef_if_dojmp:
+		movb $0x48, (%rax)
+		movb $0x8b, 1(%rax)
+		movb $0x00, 2(%rax) # mov (%rax), %rax
+		add $3, %rax
 		movb $0x48, (%rax)
 		movb $0x85, 1(%rax)
 		movb $0xc0, 2(%rax) # test %rax, %rax
@@ -1090,12 +1090,15 @@ poppy:		pop %rsi
 		jmp ef_if_do_reloc
 
 		ef_if_true_savemem:
+		# don't forget the environment offset to account for calls causing push's along the path
 		movb $0x50, (%rax) # push %rax
 		inc %rax
 		lea reg_rsp_codes(%rip), %rbx
-		movl 28(%rbx), %ebx # 4*7=56; rsp -> rax
+		movl 28(%rbx), %ebx # 4*7=28; rsp -> rax
 		movl %ebx, (%rax)
 		add $4, %rax
+		add env_offset(%rip), %rdi
+		lea (,%rdi,8), %rdi
 		movl %edi, (%rax)
 		add $4, %rax # rsp + offset -> rax
 		lea reg_to_mem_codes(%rip), %rbx
@@ -1189,12 +1192,15 @@ poppy:		pop %rsi
 		jmp ef_if_do_reloc2
 
 		ef_if_false_savemem:
+		# don't forget the environment offset to account for calls causing push's along the
 		movb $0x50, (%rax) # push %rax
 		inc %rax
 		lea reg_rsp_codes(%rip), %rbx
-		movl 28(%rbx), %ebx # 4*7=56; rsp -> rax
+		movl 28(%rbx), %ebx # 4*7=28; rsp -> rax
 		movl %ebx, (%rax)
 		add $4, %rax
+		add env_offset(%rip), %rdi
+		lea (,%rdi,8), %rdi
 		movl %edi, (%rax)
 		add $4, %rax # rsp + offset -> rax
 		lea reg_to_mem_codes(%rip), %rbx
@@ -1235,8 +1241,7 @@ poppy:		pop %rsi
 
 		call skip_ws
 
-		xor %rax, %rax
-		movb prev_char(%rip), %al
+		movsx prev_char(%rip), %rax
 		lea char_type_tbl(%rip), %rbx
 		movb (%rax,%rbx), %al
 
@@ -1294,7 +1299,7 @@ poppy:		pop %rsi
 		call my_malloc
 
 		cmp $0, %rax
-m1:		jb err_malloc_failed
+		jb err_malloc_failed
 		# mov %rdi, %rdi
 		mov %rdi, %r13
 
@@ -1328,8 +1333,7 @@ m1:		jb err_malloc_failed
 
 		pop %rsi
 
-		#mov prev_dp(%rip), %rsi
-problem:		pop %rdi
+		pop %rdi
 		mov %rsi, 16(%rdi)
 
 		movq $0, pending_fn(%rip)
@@ -1362,34 +1366,37 @@ problem:		pop %rdi
 		pushq %rdi # arg count
 		pushq %rdi # arg count that will be used as counter
 
+		addq %rdi, env_offset(%rip)
+
 		lea reg_codes(%rip), %rbx
 
 		mov $8, %rcx
 		sub %rdi, %rcx
 		mov %rcx, %rdi
-		xor %rcx, %rcx
+		mov $8, %r9
+		xchg %r9, %rdi
 
 		ef_pushloop:
-			cmpb $8, %dil
+			cmp %r9, %rdi
 			je ef_pre_loop
 			cmp $2, %rdi
 			jb ef_push_rex
 
 			movb $0x50, (%rax) # push
-			movb (%rbx,%rdi), %cl
+			movb -1(%rbx,%rdi), %cl
 			addb %cl, (%rax) # register
 			inc %rax
 			jmp ef_end_pushloop
 
 			ef_push_rex:
 			movb $0x41, (%rax)
-			movb (%rbx,%rdi), %cl
+			movb -1(%rbx,%rdi), %cl
 			addb $0x50, %cl
 			movb %cl, 1(%rax) # push+rex register
 			add $2, %rax
 
 			ef_end_pushloop:
-			incb %dil
+			decb %dil
 			jmp ef_pushloop
 
 	# top of stack is the count
@@ -1408,7 +1415,6 @@ problem:		pop %rdi
 		cmpb ct_cpar(%rip), %al
 		je ef_postloop
 
-		xor %rax, %rax
 		movsx expr(%rip), %rax
 		call accept
 
@@ -1490,11 +1496,14 @@ problem:		pop %rdi
 		test %rdi, %rdi
 		jz ef_env_direct
 
-		# This was not directly in a reg, so emit mov (%rsp,[%rdi]), [%rcx->reg]
-		dec %rdi
+		# This was not directly in a reg, so emit mov (%rsp,[%rdi+offset * 8]), [reg]
+		# don't forget the environment offset to account for calls causing push's along the
+		#path.
 		lea reg_rsp_codes(%rip), %r10
 		movl (%r10,%rdx,4), %eax
 		movl %eax, (%r8)
+		mov env_offset(%rip), %rdi
+		lea (,%rdi,8), %rdi
 		movl %edi, 4(%r8)
 		addq $8, %r8
 
@@ -1508,8 +1517,8 @@ problem:		pop %rdi
 		lea reg_reg_codes(%rip), %rax
 		lea (%rsi,%rsi,2), %rsi
 		lea (%rcx,%rcx,2), %rcx
-		lea (%rsi,%rcx,8), %rsi
-		lea (%rsi,%rax), %rax # address is reg_reg_codes + 3*rsi + 3*8*rcx XXX
+		lea (%rcx,%rsi,8), %rsi
+		lea (%rsi,%rax), %rax # address is reg_reg_codes + 3*8*rsi + 3*rcx XXX
 		movw (%rax), %cx
 		movw %cx, (%r8)
 		movb 2(%rax), %cl
@@ -1537,6 +1546,7 @@ problem:		pop %rdi
 		jne ef_loop2
 
 	ef_gencall:
+		add $2, env_offset(%rip) # add 2 to account for the call adding its return address to the stack
 		# save reloc_ptr first
 		lea reloc(%rip), %r10
 		sub %r10, %r9
@@ -1555,34 +1565,41 @@ problem:		pop %rdi
 		movl %r12d, (%r8)
 		add $4, %r8
 
-	mov $8, %rdi
-	pop %r9
+	pop %r9 # cnt
 
 	lea reg_codes(%rip), %rbx
 	xor %rcx, %rcx
 
+	subq %r9, env_offset(%rip)
+	subq $2, env_offset(%rip) # remove call stack offset from count
+
+	mov $8, %rdi
+	mov %rdi, %rcx
+	sub %r9, %rcx
+	mov %rcx, %r9
+	xchg %r9, %rdi
+
 	ef_poploop:
-		test %r9, %r9
+		cmp %r9, %rdi
 		je ef_end
 		cmp $2, %rdi
 		jb ef_pop_rex
 
 		movb $0x58, (%r8) # pop
-		movb -1(%rbx,%rdi), %cl # dil = 0 is impossible since we have at least 1 arg or we wouldn't be here
+		movb (%rbx,%rdi), %cl
 		addb %cl, (%r8) # register
 		inc %r8
 		jmp ef_end_poploop
 
 		ef_pop_rex:
 		movb $0x41, (%r8)
-		movb -1(%rbx,%rdi), %cl
+		movb (%rbx,%rdi), %cl
 		addb $0x58, %cl
 		movb %cl, 1(%r8) # pop + rex register
 		add $2, %r8
 
 		ef_end_poploop:
-		dec %dil
-		dec %r9
+		incb %dil
 		jmp ef_poploop
 
 	ef_end:
@@ -1611,7 +1628,6 @@ problem:		pop %rdi
 		push %rsi
 
 		call skip_ws
-		xor %rsi, %rsi
 		call nextch # skip over final ')'
 
 		pop %rsi
@@ -1743,6 +1759,8 @@ curr_env: .quad 0 # set to 0 if only globals exist, otherwise set to current env
 # At the time an env is popped off the stack, the pointer to the previous env is placed here.
 # If the result is 0, it means we've popped all the stacks off.
 
+env_offset: .quad 0 # for call-env interactions, to correct location of vars on stack
+
 comma_space: .ascii ", "
 colon_space: .ascii ": "
 
@@ -1778,74 +1796,74 @@ reg_to_mem_codes:
 .byte 0x48, 0x89, 0x0c, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %rcx, 0x0
 .byte 0x48, 0x89, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00 # mov %rax, 0x0
 
-reg_reg_codes: # idx = source * 3 + dest
-.byte 0x49, 0x89, 0xc1 # r9 -> r9
-.byte 0x49, 0x89, 0xc0 # r9 -> r8
-.byte 0x48, 0x89, 0xc6 # r9 -> rsi
-.byte 0x48, 0x89, 0xc7 # r9 -> rdi
-.byte 0x48, 0x89, 0xc3 # r9 -> rbx
-.byte 0x48, 0x89, 0xc2 # r9 -> rdx
-.byte 0x48, 0x89, 0xc1 # r9 -> rcx
-.byte 0x48, 0x89, 0xc0 # r9 -> rax
+reg_reg_codes: # idx = source * 3 * 8 + dest * 3
+.byte 0x49, 0x89, 0xc9 # r9 -> r9
+.byte 0x49, 0x89, 0xc8 # r9 -> r8
+.byte 0x48, 0x89, 0xcf # r9 -> rdi
+.byte 0x48, 0x89, 0xce # r9 -> rsi
+.byte 0x48, 0x89, 0xcb # r9 -> rbx
+.byte 0x48, 0x89, 0xca # r9 -> rdx
+.byte 0x48, 0x89, 0xc9 # r9 -> rcx
+.byte 0x48, 0x89, 0xc8 # r9 -> rax
 
 .byte 0x49, 0x89, 0xc1 # r8 -> r9
 .byte 0x49, 0x89, 0xc0 # r8 -> r8
-.byte 0x48, 0x89, 0xc6 # r8 -> rsi
-.byte 0x48, 0x89, 0xc7 # r8 -> rdi
+.byte 0x48, 0x89, 0xc6 # r8 -> rdi
+.byte 0x48, 0x89, 0xc7 # r8 -> rsi
 .byte 0x48, 0x89, 0xc3 # r8 -> rbx
 .byte 0x48, 0x89, 0xc2 # r8 -> rdx
 .byte 0x48, 0x89, 0xc1 # r8 -> rcx
 .byte 0x48, 0x89, 0xc0 # r8 -> rax
 
-.byte 0x49, 0x89, 0xc1 # rsi -> r9
-.byte 0x49, 0x89, 0xc0 # rsi -> r8
-.byte 0x48, 0x89, 0xc6 # rsi -> rsi
-.byte 0x48, 0x89, 0xc7 # rsi -> rdi
-.byte 0x48, 0x89, 0xc3 # rsi -> rbx
-.byte 0x48, 0x89, 0xc2 # rsi -> rdx
-.byte 0x48, 0x89, 0xc1 # rsi -> rcx
-.byte 0x48, 0x89, 0xc0 # rsi -> rax
+.byte 0x49, 0x89, 0xf9 # rdi -> r9
+.byte 0x49, 0x89, 0xf8 # rdi -> r8
+.byte 0x48, 0x89, 0xff # rdi -> rdi
+.byte 0x48, 0x89, 0xfe # rdi -> rsi
+.byte 0x48, 0x89, 0xfb # rdi -> rbx
+.byte 0x48, 0x89, 0xfa # rdi -> rdx
+.byte 0x48, 0x89, 0xf9 # rdi -> rcx
+.byte 0x48, 0x89, 0xf8 # rdi -> rax
 
-.byte 0x49, 0x89, 0xc1 # rdi -> r9
-.byte 0x49, 0x89, 0xc0 # rdi -> r8
-.byte 0x48, 0x89, 0xc6 # rdi -> rsi
-.byte 0x48, 0x89, 0xc7 # rdi -> rdi
-.byte 0x48, 0x89, 0xc3 # rdi -> rbx
-.byte 0x48, 0x89, 0xc2 # rdi -> rdx
-.byte 0x48, 0x89, 0xc1 # rdi -> rcx
-.byte 0x48, 0x89, 0xc0 # rdi -> rax
+.byte 0x49, 0x89, 0xf1 # rsi -> r9
+.byte 0x49, 0x89, 0xf0 # rsi -> r8
+.byte 0x48, 0x89, 0xf6 # rsi -> rdi
+.byte 0x48, 0x89, 0xf7 # rsi -> rsi
+.byte 0x48, 0x89, 0xf3 # rsi -> rbx
+.byte 0x48, 0x89, 0xf2 # rsi -> rdx
+.byte 0x48, 0x89, 0xf1 # rsi -> rcx
+.byte 0x48, 0x89, 0xf0 # rsi -> rax
 
-.byte 0x49, 0x89, 0xc1 # rbx -> r9
-.byte 0x49, 0x89, 0xc0 # rbx -> r8
-.byte 0x48, 0x89, 0xc6 # rbx -> rsi
-.byte 0x48, 0x89, 0xc7 # rbx -> rdi
-.byte 0x48, 0x89, 0xc3 # rbx -> rbx
-.byte 0x48, 0x89, 0xc2 # rbx -> rdx
-.byte 0x48, 0x89, 0xc1 # rbx -> rcx
-.byte 0x48, 0x89, 0xc0 # rbx -> rax
+.byte 0x49, 0x89, 0xd9 # rbx -> r9
+.byte 0x49, 0x89, 0xd8 # rbx -> r8
+.byte 0x48, 0x89, 0xdf # rbx -> rdi
+.byte 0x48, 0x89, 0xde # rbx -> rsi
+.byte 0x48, 0x89, 0xdb # rbx -> rbx
+.byte 0x48, 0x89, 0xda # rbx -> rdx
+.byte 0x48, 0x89, 0xd9 # rbx -> rcx
+.byte 0x48, 0x89, 0xd8 # rbx -> rax
 
-.byte 0x49, 0x89, 0xc1 # rdx -> r9
-.byte 0x49, 0x89, 0xc0 # rdx -> r8
-.byte 0x48, 0x89, 0xc6 # rdx -> rsi
-.byte 0x48, 0x89, 0xc7 # rdx -> rdi
-.byte 0x48, 0x89, 0xc3 # rdx -> rbx
-.byte 0x48, 0x89, 0xc2 # rdx -> rdx
-.byte 0x48, 0x89, 0xc1 # rdx -> rcx
-.byte 0x48, 0x89, 0xc0 # rdx -> rax
+.byte 0x49, 0x89, 0xd1 # rdx -> r9
+.byte 0x49, 0x89, 0xd0 # rdx -> r8
+.byte 0x48, 0x89, 0xd6 # rdx -> rdi
+.byte 0x48, 0x89, 0xd7 # rdx -> rsi
+.byte 0x48, 0x89, 0xd3 # rdx -> rbx
+.byte 0x48, 0x89, 0xd2 # rdx -> rdx
+.byte 0x48, 0x89, 0xd1 # rdx -> rcx
+.byte 0x48, 0x89, 0xd0 # rdx -> rax
 
-.byte 0x49, 0x89, 0xc1 # rcx -> r9
-.byte 0x49, 0x89, 0xc0 # rcx -> r8
-.byte 0x48, 0x89, 0xc6 # rcx -> rsi
-.byte 0x48, 0x89, 0xc7 # rcx -> rdi
-.byte 0x48, 0x89, 0xc3 # rcx -> rbx
-.byte 0x48, 0x89, 0xc2 # rcx -> rdx
-.byte 0x48, 0x89, 0xc1 # rcx -> rcx
-.byte 0x48, 0x89, 0xc0 # rcx -> rax
+.byte 0x49, 0x89, 0xc9 # rcx -> r9
+.byte 0x49, 0x89, 0xc8 # rcx -> r8
+.byte 0x48, 0x89, 0xcf # rcx -> rdi
+.byte 0x48, 0x89, 0xce # rcx -> rsi
+.byte 0x48, 0x89, 0xcb # rcx -> rbx
+.byte 0x48, 0x89, 0xca # rcx -> rdx
+.byte 0x48, 0x89, 0xc9 # rcx -> rcx
+.byte 0x48, 0x89, 0xc8 # rcx -> rax
 
 .byte 0x49, 0x89, 0xc1 # rax -> r9
 .byte 0x49, 0x89, 0xc0 # rax -> r8
-.byte 0x48, 0x89, 0xc6 # rax -> rsi
-.byte 0x48, 0x89, 0xc7 # rax -> rdi
+.byte 0x48, 0x89, 0xc6 # rax -> rdi
+.byte 0x48, 0x89, 0xc7 # rax -> rsi
 .byte 0x48, 0x89, 0xc3 # rax -> rbx
 .byte 0x48, 0x89, 0xc2 # rax -> rdx
 .byte 0x48, 0x89, 0xc1 # rax -> rcx
@@ -1864,8 +1882,8 @@ reg_imm_codes: # load this, then append literal val
 reg_rsp_codes: # offset(%rsp) -> reg. append 32-bit offset at end.
 .byte 0b01001001, 0b10001011, 0b10001100, 0b00100100 # -> r9
 .byte 0b01001001, 0b10001011, 0b10000100, 0b00100100 # -> r8
-.byte 0b01001000, 0b10001011, 0b10111100, 0b00100100 # -> rsi
-.byte 0b01001000, 0b10001011, 0b10110100, 0b00100100 # -> rdi
+.byte 0b01001000, 0b10001011, 0b10111100, 0b00100100 # -> rdi
+.byte 0b01001000, 0b10001011, 0b10110100, 0b00100100 # -> rsi
 .byte 0b01001000, 0b10001011, 0b10011100, 0b00100100 # -> rbx
 .byte 0b01001000, 0b10001011, 0b10010100, 0b00100100 # -> rdx
 .byte 0b01001000, 0b10001011, 0b10001100, 0b00100100 # -> rcx

@@ -179,8 +179,8 @@ char_type_tbl:
 .byte 0 #\TAB
 .byte 3 #\LF
 .byte 0 #\VTAB
-.byte 0 #\FF
-.byte 0 #\CR
+.byte 3 #\FF
+.byte 3 #\CR
 .byte 0 #\SO
 .byte 0 #\SI
 .byte 0 #\DLE

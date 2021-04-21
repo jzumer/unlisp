@@ -23,6 +23,10 @@
 
 nextch: # save the previous char, load the next char, fix linum/charnum based on previous char being \n or not. rsi=1 means skip to eol.
 	push %rsi
+	xor %rsi, %rsi
+
+	nextch_main:
+	push %rsi
 	test %rsi, %rsi
 	jnz skip_flip
 
@@ -39,18 +43,28 @@ nextch: # save the previous char, load the next char, fix linum/charnum based on
 	xor %rdx, %rdx # how much
 	inc %rdx
 	syscall
+	pop %rsi
 	test %rax, %rax # 0 bytes read: EOF?
 	jne nextch_next
-	#syscall # Do it again to check for next line...
-	#test %rax, %rax # Still empty, probably real EOF
-	#jne nextch_next
 
 	movb $3, this_char(%rip) # 3 = end of text
 
 	nextch_next:
-	pop %rsi
 	incq charnum(%rip)
 
+	test %rsi, %rsi
+	je nc_cont
+
+	lea char_type_tbl(%rip), %rbx
+	movsx this_char(%rip), %rax
+	movb (%rbx,%rax), %al
+
+	cmpb ct_nl(%rip), %al
+	jne nc_end
+
+	xor %rsi, %rsi
+
+	nc_cont:
 	lea char_type_tbl(%rip), %rbx
 	movsx prev_char(%rip), %rax
 	movb (%rbx,%rax), %al
@@ -61,9 +75,10 @@ nextch: # save the previous char, load the next char, fix linum/charnum based on
 	incq linum(%rip)
 	movq $0, charnum(%rip)
 
-	xor %rsi, %rsi
-
 	nc_next:
+	lea char_type_tbl(%rip), %rbx
+	movsx this_char(%rip), %rax # use this_char since we want to conserve the pre-comment char
+	movb (%rbx,%rax), %al
 	cmpb ct_comment(%rip), %al
 	jne nc_end
 
@@ -72,7 +87,8 @@ nextch: # save the previous char, load the next char, fix linum/charnum based on
 
 	nc_end:
 	test %rsi, %rsi
-	jne nextch
+	jne nextch_main
+	pop %rsi
 	ret
 
 output: # expects 'what' on %rsi and "how much" on %rdx, outputs to stdout
