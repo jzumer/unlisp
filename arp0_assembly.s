@@ -74,9 +74,9 @@ symbol_tbl:
 
 program:
 .byte 0xe9 # "entry point": jmp to start of program, i.e. past the predefined functions
-.long 149 #XXX Careful, this must point to 1 past the last code. Can't be calculated...
+.long 151 #XXX Careful, this must point to 1 past the last code. Can't be calculated...
 print_code_rel: # 'what' in %rax with format (quad)size, actual_str. For sys_write, 'what' is in %rsi and 'how much' in %rdx.
-.byte 0x52, 0x56, 0x57 # push %rdx, push %rdi, push %rsi
+.byte 0x51, 0x52, 0x56, 0x57 # push %rcx, push %rdx, push %rdi, push %rsi
 .byte 0x48, 0x8b, 0x10 # mov (%rax), %rdx
 .byte 0x48, 0x8d, 0x70, 0x08 # lea 8(%rax), %rsi
 .byte 0x48, 0x31, 0xc0 # xor %rax, %rax
@@ -85,7 +85,7 @@ print_code_rel: # 'what' in %rax with format (quad)size, actual_str. For sys_wri
 .byte 0x48, 0xff, 0xc7 # inc %rdi -> stdout
 .byte 0x0f, 0x05 # syscall
 .byte 0x48, 0xc7, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 # mov $0, ret
-.byte 0x5f, 0x5e, 0x5a # pop %rsi, pop %rdi, pop %rdx
+.byte 0x5f, 0x5e, 0x5a, 0x59 # pop %rsi, pop %rdi, pop %rdx, pop %rcx
 .byte 0xc3 # ret
 dec_code_rel:
 .byte 0x48, 0x8b, 0x00 # mov (%rax), %rax
@@ -128,7 +128,7 @@ footer_ptr: .quad 0
 
 reloc_ptr: .quad 96
 reloc:
-.quad 0x0, print_code_rel + 0x1c # 32-bit reloc in the print above for the ret
+.quad 0x0, print_code_rel + 0x1d # 32-bit reloc in the print above for the ret
 .quad 0x0, dec_code_rel + 0x0a
 .quad 0x0, inc_code_rel + 0x0a
 .quad 0x0, not_code_rel + 0x0a
