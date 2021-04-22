@@ -1,4 +1,27 @@
 .global _start
+# PLAN:
+# - add n_args (0x88) and net push's (0x90) to env 
+# - when a call is made, add 0x90 to %r15
+# - when resolving vars, every time we go to next env, add THIS env's 0x90, except first env (resolved by %r15 instead)
+# - mov offset(%rsp,%r15,8)
+# - when a call will return, sub 0x90 from %r15
+# Q: what to do if the previous env also dynamically pushed? Then %r15 if reset no longer holds
+# the data we need, and if accumulated, doesn't point to the immediate next env.
+# A: push %r15 and set %r15 to 1 (so we skip it), retrieve its value using the new %r15 - 1.
+# Corrolary: we don't need to manually keep track of net push's, we can just be lazy and let the runtime do the math.
+# The net result is:
+# - add n_args (0x88) so we can push all args in env, not just next function's args (important for proper offsets). [done]
+# - let %r15 account for net push's [done]
+# - push %r15 and reset it to 1 when a new env is created [done]
+# - pop %r15 at end of env [done]
+# - when a var is to be resolved, count how many %r15's we need, then get them in a loop [done]
+# looks like:
+# [insert mov %r15, %r14]
+# [insert mov %r14, %r13]
+# [while %rbx < n_needed do]
+# [insert mov -8(%rsp,%r14), %r14]
+# [insert add %r14, %r13]
+# [insert lea offset(%rsp,%r13,8)]
 
 .text
 
@@ -534,8 +557,7 @@ find_env: # Like find_symbol but on the environment, all the way to the root.
 	xor %r12, %r12 # %rsp offset (-1 = already in register, otherwise offset(%rsp))
 	dec %r12
 	xor %r13, %r13 # register index if applicable
-	xor %r11, %r11 # maximum index seen, to determine if we're on a register
-	# or truly in the stack
+	xor %r15, %r15 # how many envs we passed, for runtime r13 calculation
 
 	fe_callloop:
 		test %rcx, %rcx
@@ -574,15 +596,14 @@ find_env: # Like find_symbol but on the environment, all the way to the root.
 			jmp fe_callloop
 
 		fe_next_env:
+			inc %r15
+
 			cmp $-1, %r12
 			jne fe_cont
 
 			xor %r12, %r12
 
 			fe_cont:
-			cmp %r13, %r11
-			cmovl %r13, %r11
-
 			xor %r13, %r13
 			movq 0x80(%r14), %rcx
 			mov %rcx, %r14
@@ -590,15 +611,9 @@ find_env: # Like find_symbol but on the environment, all the way to the root.
 
 	fe_done_cl:
 		mov %r12, %rdi
-		mov $-1, %r12
-		cmp %r11, %r13
-		cmovge %r12, %rdi
-		# the current index is larger than the max ever seen, (note that we save lengths,
-		# not indices, so we ge instead of g)
-		# so we're in a reg and not stack
-
-		fe_end:
 		mov %r13, %rsi
+		cmp $-1, %r12
+		cmovne %r15, %rsi # if we're on stack, %rsi must be how many envs we passed
 		xor %rax, %rax
 		ret
 
@@ -623,10 +638,6 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 	cmpb ct_opar(%rip), %al
 	jne af_normal
-
-	xor %r15, %r15
-	inc %r15
-	# HACK: needed to fix stack-relative positions in lambda inside calls in 1st position
 
 	af_normal:
 	xor %rax, %rax
@@ -686,6 +697,20 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		push %rax
 		add $5, ip(%rip)
 
+		# push %r15
+		movb $0x41, (%rax)
+		movb $0x57, 1(%rax)
+		# mov $2, %r15 -- accounts for old %r15's own stack position + call return address.
+		movb $0x49, 2(%rax)
+		movb $0xc7, 3(%rax)
+		movb $0xc7, 4(%rax)
+		movb $0x02, 5(%rax)
+		movb $0x00, 6(%rax)
+		movb $0x00, 7(%rax)
+		movb $0x00, 8(%rax)
+		add $9, %rax
+		#add $9, ip(%rip)
+
 		call skip_ws
 
 		movsx prev_char(%rip), %rax
@@ -697,14 +722,13 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		call nextch # skip '('
 
-		push %r15
-
 		mov $8, %rcx # format is (string:8, str lgt:8). Last entry is (prev env:8).
 		ef_clear_stack:
 			pushq $0
 			pushq $0
 			loop ef_clear_stack
-		pushq $0
+		pushq $0 # next env
+		pushq $0 # n_args
 
 		mov curr_env(%rip), %rbx
 		mov %rbx, 0x80(%rsp)
@@ -783,16 +807,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		mov $8, %rbx
 		sub %rcx, %rbx # rbx = param count
-
-		lea program(%rip), %rax
-		add ip(%rip), %rax
-		# add [n_args], %r15
-		movb $0x49, (%rax)
-		movb $0x81, 1(%rax)
-		movb $0xc7, 2(%rax)
-		inc %rbx
-		movl %ebx, 3(%rax)
-		dec %rbx
+		mov %rbx, 0x88(%rsp)
 
 		push %rbx
 
@@ -805,7 +820,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movq %rbx, 8(%rcx) # format is n_params:8, address:8
 		addq $16, dp(%rip)
 
-		add $7, ip(%rip) # from above insertions
+		addq $9, ip(%rip) # from the r15 reinit sequence ABOVE
 
 		lea reloc(%rip), %rdx
 		add reloc_ptr(%rip), %rdx
@@ -822,7 +837,6 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		cmpb ct_cpar(%rip), %al
 		je ef_incomplete # no expr in the lambda
 
-		xor %r15, %r15
 		movsx expr(%rip), %rax
 		call expect
 
@@ -896,6 +910,39 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		ef_l_rsp:
 		lea (,%rdi,8), %rdi
 		lea reg_rsp_codes(%rip), %rbx
+
+		# mov %r15, %r14
+		movb $0x4d, (%rax)
+		movb $0x89, 1(%rax)
+		movb $0xfe, 2(%rax)
+		add $3, %rax
+
+		# mov %r15, %r13
+		movb $0x4d, (%rax)
+		movb $0x89, 1(%rax)
+		movb $0xfd, 2(%rax)
+		add $3, %rax
+
+		mov %rsi, %rcx
+		dec %rcx
+		test %rcx, %rcx
+		jz skip_lrc
+		l_rsp_compute_r13:
+			# mov -8(%rsp,%r14,8), %r14
+			movb $0x4e, (%rax)
+			movb $0x8b, 1(%rax)
+			movb $0x74, 2(%rax)
+			movb $0xf4, 3(%rax)
+			movb $0xf8, 4(%rax)
+			add $5, %rax
+			# add %r14, %r13
+			movb $0x4d, (%rax)
+			movb $0x01, 1(%rax)
+			movb $0xf5, 2(%rax)
+			add $3, %rax
+			loop l_rsp_compute_r13
+
+		skip_lrc:
 		movl 28(%rbx), %ebx # 4*7=28
 		movl %ebx, (%rax) # mov offset(%rsp), %rax
 		movl %edi, 4(%rax)
@@ -914,27 +961,20 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		# Teardown env; note that this leaks the string we had allocated...
 		pop %rbx # n_args
 
-		# sub [n_args], %r15
-		movb $0x49, (%rax)
-		movb $0x81, 1(%rax)
-		movb $0xef, 2(%rax)
-		inc %rbx
-		movl %ebx, 3(%rax)
-		dec %rbx
-		movb $0xc3, 7(%rax) # ret
-		add $8, %rax
-		add $8, ip(%rip)
-
 		movq curr_env(%rip), %rcx
 		movq 0x80(%rcx), %rcx
 		movq %rcx, curr_env(%rip)
-		add $0x88, %rsp
+		add $0x90, %rsp
 
-		pop %r15
-		test %r15, %r15
-		je ef_l_nofix
+		# pop %r15
+		movb $0x41, (%rax)
+		movb $0x5f, 1(%rax)
+		add $2, %rax
 
-		ef_l_nofix:
+		movb $0xc3, (%rax) # ret
+		inc %rax
+		add $3, ip(%rip)
+
 		pop %rcx
 		pop %rbx
 		sub %rcx, %rax
@@ -992,7 +1032,10 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		lea program(%rip), %rax
 		addq ip(%rip), %rax
 		movb $0x50, (%rax) # push %rax
-		inc %rax
+		movb $0x49, 1(%rax)
+		movb $0xff, 2(%rax)
+		movb $0xc7, 3(%rax) # inc %r15
+		add $4, %rax
 
 		test %rbx, %rbx # 0 = call, 1 = literal, 2 = env
 		je ef_if_from_mem_go
@@ -1041,6 +1084,39 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		ef_if_from_rsp_go:
 		lea reg_rsp_codes(%rip), %rbx
+
+		# mov %r15, %r14
+		movb $0x4d, (%rax)
+		movb $0x89, 1(%rax)
+		movb $0xfe, 2(%rax)
+		add $3, %rax
+
+		# mov %r15, %r13
+		movb $0x4d, (%rax)
+		movb $0x89, 1(%rax)
+		movb $0xfd, 2(%rax)
+		add $3, %rax
+
+		mov %rsi, %rcx
+		dec %rcx
+		test %rcx, %rcx
+		jz skip_ifc
+		if_from_compute_r13:
+			# mov -8(%rsp,%r14,8), %r14
+			movb $0x4e, (%rax)
+			movb $0x8b, 1(%rax)
+			movb $0x74, 2(%rax)
+			movb $0xf4, 3(%rax)
+			movb $0xf8, 4(%rax)
+			add $5, %rax
+			# add %r14, %r13
+			movb $0x4d, (%rax)
+			movb $0x01, 1(%rax)
+			movb $0xf5, 2(%rax)
+			add $3, %rax
+			loop if_from_compute_r13
+
+		skip_ifc:
 		movl 28(%rbx), %ebx # 4*7=28
 		movl %ebx, (%rax) # mov offset(%rsp), %rax
 		mov $8, %rbx
@@ -1069,6 +1145,11 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movb $0xc0, 2(%rax) # test %rax, %rax
 		movb $0x58, 3(%rax) # pop %rax -- we no longer need the test var
 		add $4, %rax
+		# dec %r15
+		movb $0x49, (%rax)
+		movb $0xff, 1(%rax)
+		movb $0xcf, 2(%rax)
+		add $3, %rax
 		movb $0x0f, (%rax)
 		movb $0x84, 1(%rax) # je [4 bytes offset]
 		add $2, %rax
@@ -1137,6 +1218,39 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movb $0x50, (%rax) # push %rax
 		inc %rax
 		lea reg_rsp_codes(%rip), %rbx
+
+		# mov %r15, %r14
+		movb $0x4d, (%rax)
+		movb $0x89, 1(%rax)
+		movb $0xfe, 2(%rax)
+		add $3, %rax
+
+		# mov %r15, %r13
+		movb $0x4d, (%rax)
+		movb $0x89, 1(%rax)
+		movb $0xfd, 2(%rax)
+		add $3, %rax
+
+		mov %rsi, %rcx
+		dec %rcx
+		test %rcx, %rcx
+		jz skip_tc
+		true_compute_r13:
+			# mov -8(%rsp,%r14,8), %r14
+			movb $0x4e, (%rax)
+			movb $0x8b, 1(%rax)
+			movb $0x74, 2(%rax)
+			movb $0xf4, 3(%rax)
+			movb $0xf8, 4(%rax)
+			add $5, %rax
+			# add %r14, %r13
+			movb $0x4d, (%rax)
+			movb $0x01, 1(%rax)
+			movb $0xf5, 2(%rax)
+			add $3, %rax
+			loop true_compute_r13
+
+		skip_tc:
 		movl 28(%rbx), %ebx # 4*7=28; rsp -> rax
 		movl %ebx, (%rax)
 		add $4, %rax
@@ -1238,6 +1352,39 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movb $0x50, (%rax) # push %rax
 		inc %rax
 		lea reg_rsp_codes(%rip), %rbx
+
+		# mov %r15, %r14
+		movb $0x4d, (%rax)
+		movb $0x89, 1(%rax)
+		movb $0xfe, 2(%rax)
+		add $3, %rax
+
+		# mov %r15, %r13
+		movb $0x4d, (%rax)
+		movb $0x89, 1(%rax)
+		movb $0xfd, 2(%rax)
+		add $3, %rax
+
+		mov %rsi, %rcx
+		dec %rcx
+		test %rcx, %rcx
+		jz skip_fc
+		false_compute_r13:
+			# mov -8(%rsp,%r14,8), %r14
+			movb $0x4e, (%rax)
+			movb $0x8b, 1(%rax)
+			movb $0x74, 2(%rax)
+			movb $0xf4, 3(%rax)
+			movb $0xf8, 4(%rax)
+			add $5, %rax
+			# add %r14, %r13
+			movb $0x4d, (%rax)
+			movb $0x01, 1(%rax)
+			movb $0xf5, 2(%rax)
+			add $3, %rax
+			loop false_compute_r13
+
+		skip_fc:
 		movl 28(%rbx), %ebx # 4*7=28; rsp -> rax
 		movl %ebx, (%rax)
 		add $4, %rax
@@ -1373,7 +1520,6 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		call skip_ws
 
 		pop %rsi
-
 		pop %rdi
 		mov %rsi, 16(%rdi)
 
@@ -1404,39 +1550,47 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 
 		mov (%rsi), %rdi
 		pushq 8(%rsi) # function address
-		pushq %rdi # arg count
-		pushq %rdi # arg count that will be used as counter
+		pushq %rdi # count
+		pushq %rdi # counter (-> 0)
 
 		lea reg_codes(%rip), %rbx
 
-		mov $8, %rcx
-		sub %rdi, %rcx
-		mov %rcx, %rdi
-		mov $8, %r9
-		xchg %r9, %rdi
+		mov curr_env(%rip), %rcx
+		test %rcx, %rcx
+		je skip_push
+
+		mov 0x88(%rcx), %rcx # cnt (-> idx)
+		# add [n_args], %r15
+		movb $0x49, (%rax)
+		movb $0x81, 1(%rax)
+		movb $0xc7, 2(%rax)
+		#movl %ecx, 3(%rax)
+		movl %edi, 3(%rax)
+		add $7, %rax
+
+		# XXX
+		mov %rdi, %rcx
 
 		ef_pushloop:
-			cmp %r9, %rdi
-			je ef_pre_loop
-			cmp $2, %rdi
-			jb ef_push_rex
+			mov $8, %rdi
+			sub %rcx, %rdi # 8 - [idx -> 0] i.e. [8 to (8-cnt)]
 
+			cmp $6, %rcx
+			jb ef_norex
+
+			movb $0x41, (%rax)
+			inc %rax
+
+			ef_norex:
 			movb $0x50, (%rax) # push
-			movb -1(%rbx,%rdi), %cl
-			addb %cl, (%rax) # register
+			movb (%rbx,%rdi), %dl
+			addb %dl, (%rax) # register
 			inc %rax
 			jmp ef_end_pushloop
 
-			ef_push_rex:
-			movb $0x41, (%rax)
-			movb -1(%rbx,%rdi), %cl
-			addb $0x50, %cl
-			movb %cl, 1(%rax) # push+rex register
-			add $2, %rax
-
 			ef_end_pushloop:
-			decb %dil
-			jmp ef_pushloop
+			loop ef_pushloop
+		skip_push:
 
 	# top of stack is the count
 	ef_pre_loop:
@@ -1541,6 +1695,39 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		#path.
 		lea reg_rsp_codes(%rip), %r10
 		movl (%r10,%rdx,4), %eax
+
+		# mov %r15, %r14
+		movb $0x4d, (%r8)
+		movb $0x89, 1(%r8)
+		movb $0xfe, 2(%r8)
+		add $3, %r8
+
+		# mov %r15, %r13
+		movb $0x4d, (%r8)
+		movb $0x89, 1(%r8)
+		movb $0xfd, 2(%r8)
+		add $3, %r8
+
+		mov %rsi, %rcx
+		dec %rcx
+		test %rcx, %rcx
+		jz skip_aec
+		argenv_compute_r13:
+			# mov -8(%rsp,%r14,8), %r14
+			movb $0x4e, (%r8)
+			movb $0x8b, 1(%r8)
+			movb $0x74, 2(%r8)
+			movb $0xf4, 3(%r8)
+			movb $0xf8, 4(%r8)
+			add $5, %r8
+			# add %r14, %r13
+			movb $0x4d, (%r8)
+			movb $0x01, 1(%r8)
+			movb $0xf5, 2(%r8)
+			add $3, %r8
+			loop argenv_compute_r13
+
+		skip_aec:
 		movl %eax, (%r8)
 		lea (,%rdi,8), %rdi
 		movl %edi, 4(%r8)
@@ -1608,36 +1795,46 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	pop %r9 # cnt
 
 	lea reg_codes(%rip), %rbx
-	xor %rcx, %rcx
+	mov curr_env(%rip), %rcx
+	test %rcx, %rcx
+	je skip_pop
 
-	mov $8, %rdi
-	mov %rdi, %rcx
-	sub %r9, %rcx
-	mov %rcx, %r9
-	xchg %r9, %rdi
+	mov %rcx, %rdx
+	mov 0x88(%rcx), %rcx # cnt
 
+	# sub [n_args], %r15
+	movb $0x49, (%r8)
+	movb $0x81, 1(%r8)
+	movb $0xef, 2(%r8)
+	#movl %ecx, 3(%r8)
+	movl %r9d, 3(%r8)
+	add $7, %r8
+
+	# XXX
+	mov %r9, %rcx
+
+	mov $8, %rsi
+	sub %rcx, %rsi # 8 - cnt
 	ef_poploop:
-		cmp %r9, %rdi
-		je ef_end
-		cmp $2, %rdi
-		jb ef_pop_rex
+		lea (%rsi,%rcx), %rdi # (cnt - idx) + (8 - cnt) = 8 - cnt + [idx -> cnt], i.e. [8-cnt to 8]
+		dec %rdi
 
+		cmp $6, %rcx
+		jb ef_norex2
+
+		movb $0x41, (%r8)
+		inc %r8
+
+		ef_norex2:
 		movb $0x58, (%r8) # pop
-		movb (%rbx,%rdi), %cl
-		addb %cl, (%r8) # register
+		movb (%rbx,%rdi), %dil
+		addb %dil, (%r8) # register
 		inc %r8
 		jmp ef_end_poploop
 
-		ef_pop_rex:
-		movb $0x41, (%r8)
-		movb (%rbx,%rdi), %cl
-		addb $0x58, %cl
-		movb %cl, 1(%r8) # pop + rex register
-		add $2, %r8
-
 		ef_end_poploop:
-		incb %dil
-		jmp ef_poploop
+		loop ef_poploop
+	skip_pop:
 
 	ef_end:
 		lea program(%rip), %r9
@@ -1660,7 +1857,6 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		#jmp ef_ret
 
 	ef_ret:
-		xor %r15, %r15
 		push %rbx
 		push %rax
 		push %rsi
@@ -1915,15 +2111,15 @@ reg_imm_codes: # load this, then append literal val
 .byte 0b01001000, 0b10111001
 .byte 0b01001000, 0b10111000
 
-reg_rsp_codes: # mov offset(%rsp,%r15,8), [reg]. append 32-bit offset at end.
-.byte 0x4e, 0x8b, 0x8c, 0xfc # -> r9
-.byte 0x4e, 0x8b, 0x84, 0xfc # -> r8
-.byte 0x4a, 0x8b, 0xbc, 0xfc # -> rdi
-.byte 0x4a, 0x8b, 0xb4, 0xfc # -> rsi
-.byte 0x4a, 0x8b, 0x9c, 0xfc # -> rbx
-.byte 0x4a, 0x8b, 0x94, 0xfc # -> rdx
-.byte 0x4a, 0x8b, 0x8c, 0xfc # -> rcx
-.byte 0x4a, 0x8b, 0x84, 0xfc # -> rax
+reg_rsp_codes: # mov offset(%rsp,%r13,8), [reg]. append 32-bit offset at end.
+.byte 0x4e, 0x8b, 0x8c, 0xec # -> r9
+.byte 0x4e, 0x8b, 0x84, 0xec # -> r8
+.byte 0x4a, 0x8b, 0xbc, 0xec # -> rdi
+.byte 0x4a, 0x8b, 0xb4, 0xec # -> rsi
+.byte 0x4a, 0x8b, 0x9c, 0xec # -> rbx
+.byte 0x4a, 0x8b, 0x94, 0xec # -> rdx
+.byte 0x4a, 0x8b, 0x8c, 0xec # -> rcx
+.byte 0x4a, 0x8b, 0x84, 0xec # -> rax
 
 last_charnum: .quad 0
 last_linum: .quad 0
