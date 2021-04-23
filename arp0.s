@@ -1,28 +1,4 @@
 .global _start
-# PLAN:
-# - add n_args (0x88) and net push's (0x90) to env 
-# - when a call is made, add 0x90 to %r15
-# - when resolving vars, every time we go to next env, add THIS env's 0x90, except first env (resolved by %r15 instead)
-# - mov offset(%rsp,%r15,8)
-# - when a call will return, sub 0x90 from %r15
-# Q: what to do if the previous env also dynamically pushed? Then %r15 if reset no longer holds
-# the data we need, and if accumulated, doesn't point to the immediate next env.
-# A: push %r15 and set %r15 to 1 (so we skip it), retrieve its value using the new %r15 - 1.
-# Corrolary: we don't need to manually keep track of net push's, we can just be lazy and let the runtime do the math.
-# The net result is:
-# - add n_args (0x88) so we can push all args in env, not just next function's args (important for proper offsets). [done]
-# - let %r15 account for net push's [done]
-# - push %r15 and reset it to 1 when a new env is created [done]
-# - pop %r15 at end of env [done]
-# - when a var is to be resolved, count how many %r15's we need, then get them in a loop [done]
-# looks like:
-# [insert mov %r15, %r14]
-# [insert mov %r14, %r13]
-# [while %rbx < n_needed do]
-# [insert mov -8(%rsp,%r14), %r14]
-# [insert add %r14, %r13]
-# [insert lea offset(%rsp,%r13,8)]
-
 .text
 
 _start:
@@ -697,19 +673,16 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		push %rax
 		add $5, ip(%rip)
 
-		# push %r15
-		movb $0x41, (%rax)
-		movb $0x57, 1(%rax)
 		# mov $2, %r15 -- accounts for old %r15's own stack position + call return address.
-		movb $0x49, 2(%rax)
-		movb $0xc7, 3(%rax)
-		movb $0xc7, 4(%rax)
-		movb $0x02, 5(%rax)
+		movb $0x49, (%rax)
+		movb $0xc7, 1(%rax)
+		movb $0xc7, 2(%rax)
+		movb $0x00, 3(%rax)
+		movb $0x00, 4(%rax)
+		movb $0x00, 5(%rax)
 		movb $0x00, 6(%rax)
-		movb $0x00, 7(%rax)
-		movb $0x00, 8(%rax)
-		add $9, %rax
-		#add $9, ip(%rip)
+		add $7, %rax
+		#add $7, ip(%rip)
 
 		call skip_ws
 
@@ -820,7 +793,7 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movq %rbx, 8(%rcx) # format is n_params:8, address:8
 		addq $16, dp(%rip)
 
-		addq $9, ip(%rip) # from the r15 reinit sequence ABOVE
+		addq $7, ip(%rip) # from the r15 reinit sequence ABOVE
 
 		lea reloc(%rip), %rdx
 		add reloc_ptr(%rip), %rdx
@@ -911,38 +884,39 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		lea (,%rdi,8), %rdi
 		lea reg_rsp_codes(%rip), %rbx
 
+		mov %rsi, %rcx
+		dec %rcx
+		test %rcx, %rcx
+		jz skip_tc4
+
 		# mov %r15, %r14
 		movb $0x4d, (%rax)
 		movb $0x89, 1(%rax)
 		movb $0xfe, 2(%rax)
 		add $3, %rax
 
-		# mov %r15, %r13
+		# xor %r13, %r13
 		movb $0x4d, (%rax)
-		movb $0x89, 1(%rax)
-		movb $0xfd, 2(%rax)
+		movb $0x31, 1(%rax)
+		movb $0xed, 2(%rax)
 		add $3, %rax
 
-		mov %rsi, %rcx
-		dec %rcx
-		test %rcx, %rcx
-		jz skip_lrc
-		l_rsp_compute_r13:
-			# mov -8(%rsp,%r14,8), %r14
-			movb $0x4e, (%rax)
-			movb $0x8b, 1(%rax)
-			movb $0x74, 2(%rax)
-			movb $0xf4, 3(%rax)
-			movb $0xf8, 4(%rax)
-			add $5, %rax
+		tc4:
 			# add %r14, %r13
 			movb $0x4d, (%rax)
 			movb $0x01, 1(%rax)
 			movb $0xf5, 2(%rax)
 			add $3, %rax
-			loop l_rsp_compute_r13
+			# mov -16(%rsp,%r14,8), %r14
+			movb $0x4e, (%rax)
+			movb $0x8b, 1(%rax)
+			movb $0x74, 2(%rax)
+			movb $0xf4, 3(%rax)
+			movb $0xf0, 4(%rax)
+			add $5, %rax
+			loop tc4
 
-		skip_lrc:
+		skip_tc4:
 		movl 28(%rbx), %ebx # 4*7=28
 		movl %ebx, (%rax) # mov offset(%rsp), %rax
 		movl %edi, 4(%rax)
@@ -966,14 +940,9 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movq %rcx, curr_env(%rip)
 		add $0x90, %rsp
 
-		# pop %r15
-		movb $0x41, (%rax)
-		movb $0x5f, 1(%rax)
-		add $2, %rax
-
 		movb $0xc3, (%rax) # ret
 		inc %rax
-		add $3, ip(%rip)
+		add $1, ip(%rip)
 
 		pop %rcx
 		pop %rbx
@@ -1085,38 +1054,39 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		ef_if_from_rsp_go:
 		lea reg_rsp_codes(%rip), %rbx
 
+		mov %rsi, %rcx
+		dec %rcx
+		test %rcx, %rcx
+		jz skip_tc5
+
 		# mov %r15, %r14
 		movb $0x4d, (%rax)
 		movb $0x89, 1(%rax)
 		movb $0xfe, 2(%rax)
 		add $3, %rax
 
-		# mov %r15, %r13
+		# xor %r13, %r13
 		movb $0x4d, (%rax)
-		movb $0x89, 1(%rax)
-		movb $0xfd, 2(%rax)
+		movb $0x31, 1(%rax)
+		movb $0xed, 2(%rax)
 		add $3, %rax
 
-		mov %rsi, %rcx
-		dec %rcx
-		test %rcx, %rcx
-		jz skip_ifc
-		if_from_compute_r13:
-			# mov -8(%rsp,%r14,8), %r14
-			movb $0x4e, (%rax)
-			movb $0x8b, 1(%rax)
-			movb $0x74, 2(%rax)
-			movb $0xf4, 3(%rax)
-			movb $0xf8, 4(%rax)
-			add $5, %rax
+		tc5:
 			# add %r14, %r13
 			movb $0x4d, (%rax)
 			movb $0x01, 1(%rax)
 			movb $0xf5, 2(%rax)
 			add $3, %rax
-			loop if_from_compute_r13
+			# mov -16(%rsp,%r14,8), %r14
+			movb $0x4e, (%rax)
+			movb $0x8b, 1(%rax)
+			movb $0x74, 2(%rax)
+			movb $0xf4, 3(%rax)
+			movb $0xf0, 4(%rax)
+			add $5, %rax
+			loop tc5
 
-		skip_ifc:
+		skip_tc5:
 		movl 28(%rbx), %ebx # 4*7=28
 		movl %ebx, (%rax) # mov offset(%rsp), %rax
 		mov $8, %rbx
@@ -1140,16 +1110,16 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movb $0x8b, 1(%rax)
 		movb $0x00, 2(%rax) # mov (%rax), %rax
 		add $3, %rax
+		# dec %r15 -- has to be done before test but after we eval'd the first form
+		movb $0x49, (%rax)
+		movb $0xff, 1(%rax)
+		movb $0xcf, 2(%rax)
+		add $3, %rax
 		movb $0x48, (%rax)
 		movb $0x85, 1(%rax)
 		movb $0xc0, 2(%rax) # test %rax, %rax
 		movb $0x58, 3(%rax) # pop %rax -- we no longer need the test var
 		add $4, %rax
-		# dec %r15
-		movb $0x49, (%rax)
-		movb $0xff, 1(%rax)
-		movb $0xcf, 2(%rax)
-		add $3, %rax
 		movb $0x0f, (%rax)
 		movb $0x84, 1(%rax) # je [4 bytes offset]
 		add $2, %rax
@@ -1219,38 +1189,39 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		inc %rax
 		lea reg_rsp_codes(%rip), %rbx
 
+		mov %rsi, %rcx
+		dec %rcx
+		test %rcx, %rcx
+		jz skip_tc1
+
 		# mov %r15, %r14
 		movb $0x4d, (%rax)
 		movb $0x89, 1(%rax)
 		movb $0xfe, 2(%rax)
 		add $3, %rax
 
-		# mov %r15, %r13
+		# xor %r13, %r13
 		movb $0x4d, (%rax)
-		movb $0x89, 1(%rax)
-		movb $0xfd, 2(%rax)
+		movb $0x31, 1(%rax)
+		movb $0xed, 2(%rax)
 		add $3, %rax
 
-		mov %rsi, %rcx
-		dec %rcx
-		test %rcx, %rcx
-		jz skip_tc
-		true_compute_r13:
-			# mov -8(%rsp,%r14,8), %r14
-			movb $0x4e, (%rax)
-			movb $0x8b, 1(%rax)
-			movb $0x74, 2(%rax)
-			movb $0xf4, 3(%rax)
-			movb $0xf8, 4(%rax)
-			add $5, %rax
+		tc1:
 			# add %r14, %r13
 			movb $0x4d, (%rax)
 			movb $0x01, 1(%rax)
 			movb $0xf5, 2(%rax)
 			add $3, %rax
-			loop true_compute_r13
+			# mov -16(%rsp,%r14,8), %r14
+			movb $0x4e, (%rax)
+			movb $0x8b, 1(%rax)
+			movb $0x74, 2(%rax)
+			movb $0xf4, 3(%rax)
+			movb $0xf0, 4(%rax)
+			add $5, %rax
+			loop tc1
 
-		skip_tc:
+		skip_tc1:
 		movl 28(%rbx), %ebx # 4*7=28; rsp -> rax
 		movl %ebx, (%rax)
 		add $4, %rax
@@ -1353,38 +1324,39 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		inc %rax
 		lea reg_rsp_codes(%rip), %rbx
 
+		mov %rsi, %rcx
+		dec %rcx
+		test %rcx, %rcx
+		jz skip_tc2
+
 		# mov %r15, %r14
 		movb $0x4d, (%rax)
 		movb $0x89, 1(%rax)
 		movb $0xfe, 2(%rax)
 		add $3, %rax
 
-		# mov %r15, %r13
+		# xor %r13, %r13
 		movb $0x4d, (%rax)
-		movb $0x89, 1(%rax)
-		movb $0xfd, 2(%rax)
+		movb $0x31, 1(%rax)
+		movb $0xed, 2(%rax)
 		add $3, %rax
 
-		mov %rsi, %rcx
-		dec %rcx
-		test %rcx, %rcx
-		jz skip_fc
-		false_compute_r13:
-			# mov -8(%rsp,%r14,8), %r14
-			movb $0x4e, (%rax)
-			movb $0x8b, 1(%rax)
-			movb $0x74, 2(%rax)
-			movb $0xf4, 3(%rax)
-			movb $0xf8, 4(%rax)
-			add $5, %rax
+		tc2:
 			# add %r14, %r13
 			movb $0x4d, (%rax)
 			movb $0x01, 1(%rax)
 			movb $0xf5, 2(%rax)
 			add $3, %rax
-			loop false_compute_r13
+			# mov -16(%rsp,%r14,8), %r14
+			movb $0x4e, (%rax)
+			movb $0x8b, 1(%rax)
+			movb $0x74, 2(%rax)
+			movb $0xf4, 3(%rax)
+			movb $0xf0, 4(%rax)
+			add $5, %rax
+			loop tc2
 
-		skip_fc:
+		skip_tc2:
 		movl 28(%rbx), %ebx # 4*7=28; rsp -> rax
 		movl %ebx, (%rax)
 		add $4, %rax
@@ -1558,18 +1530,16 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		mov curr_env(%rip), %rcx
 		test %rcx, %rcx
 		je skip_push
-
+		mov 0x80(%rcx), %rcx
+		test %rcx, %rcx
+		je skip_push
 		mov 0x88(%rcx), %rcx # cnt (-> idx)
 		# add [n_args], %r15
 		movb $0x49, (%rax)
 		movb $0x81, 1(%rax)
 		movb $0xc7, 2(%rax)
-		#movl %ecx, 3(%rax)
-		movl %edi, 3(%rax)
+		movl %ecx, 3(%rax)
 		add $7, %rax
-
-		# XXX
-		mov %rdi, %rcx
 
 		ef_pushloop:
 			mov $8, %rdi
@@ -1696,38 +1666,39 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		lea reg_rsp_codes(%rip), %r10
 		movl (%r10,%rdx,4), %eax
 
-		# mov %r15, %r14
-		movb $0x4d, (%r8)
-		movb $0x89, 1(%r8)
-		movb $0xfe, 2(%r8)
-		add $3, %r8
-
-		# mov %r15, %r13
-		movb $0x4d, (%r8)
-		movb $0x89, 1(%r8)
-		movb $0xfd, 2(%r8)
-		add $3, %r8
-
 		mov %rsi, %rcx
 		dec %rcx
 		test %rcx, %rcx
-		jz skip_aec
-		argenv_compute_r13:
-			# mov -8(%rsp,%r14,8), %r14
-			movb $0x4e, (%r8)
-			movb $0x8b, 1(%r8)
-			movb $0x74, 2(%r8)
-			movb $0xf4, 3(%r8)
-			movb $0xf8, 4(%r8)
-			add $5, %r8
-			# add %r14, %r13
-			movb $0x4d, (%r8)
-			movb $0x01, 1(%r8)
-			movb $0xf5, 2(%r8)
-			add $3, %r8
-			loop argenv_compute_r13
+		jz skip_tc3
 
-		skip_aec:
+		# mov %r15, %r14
+		movb $0x4d, (%rax)
+		movb $0x89, 1(%rax)
+		movb $0xfe, 2(%rax)
+		add $3, %rax
+
+		# xor %r13, %r13
+		movb $0x4d, (%rax)
+		movb $0x31, 1(%rax)
+		movb $0xed, 2(%rax)
+		add $3, %rax
+
+		tc3:
+			# add %r14, %r13
+			movb $0x4d, (%rax)
+			movb $0x01, 1(%rax)
+			movb $0xf5, 2(%rax)
+			add $3, %rax
+			# mov -16(%rsp,%r14,8), %r14
+			movb $0x4e, (%rax)
+			movb $0x8b, 1(%rax)
+			movb $0x74, 2(%rax)
+			movb $0xf4, 3(%rax)
+			movb $0xf0, 4(%rax)
+			add $5, %rax
+			loop tc3
+
+		skip_tc3:
 		movl %eax, (%r8)
 		lea (,%rdi,8), %rdi
 		movl %edi, 4(%r8)
@@ -1779,6 +1750,11 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		sub %r10, %r9
 		mov %r9, reloc_ptr(%rip)
 
+		# push %r15
+		movb $0x41, (%r8)
+		movb $0x57, 1(%r8)
+		add $2, %r8
+
 		movb $0xe8, (%r8) # call
 		inc %r8
 		pop %rax # cnt
@@ -1792,10 +1768,18 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		movl %r12d, (%r8)
 		add $4, %r8
 
+		# pop %r15
+		movb $0x41, (%r8)
+		movb $0x5f, 1(%r8)
+		add $2, %r8
+
 	pop %r9 # cnt
 
 	lea reg_codes(%rip), %rbx
 	mov curr_env(%rip), %rcx
+	test %rcx, %rcx
+	je skip_pop
+	mov 0x80(%rcx), %rcx
 	test %rcx, %rcx
 	je skip_pop
 
@@ -1806,12 +1790,8 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 	movb $0x49, (%r8)
 	movb $0x81, 1(%r8)
 	movb $0xef, 2(%r8)
-	#movl %ecx, 3(%r8)
-	movl %r9d, 3(%r8)
+	movl %ecx, 3(%r8)
 	add $7, %r8
-
-	# XXX
-	mov %r9, %rcx
 
 	mov $8, %rsi
 	sub %rcx, %rsi # 8 - cnt
