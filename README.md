@@ -28,7 +28,7 @@ Provided here for those who might grasp something from it. Note that the code qu
 	(fn (cnt x)
 		(if cnt
 			((fn (a) (print-times (dec cnt) x)) (print x)) ;; sequencing and recursion
-			(print x))))
+			(nop))))
 (print-it x) ;; calling functions
 (switch-print 1 x y)
 (switch-print 0 y x)
@@ -125,7 +125,6 @@ implementation, which uses a "flattened loop".
 ### General
 
 - I used several hacks to work around limitations of the syntax description from above: it would have been more productive to speciate the syntax better instead, it ended up adding a lot of otherwise unncessary code.
+- A major stylistic misstep is the gross lack of factorization in the code. Maybe 20% of the code could be removed with just half an hour's worth of refactoring.
 
-Those are fairly encouraging results, and there are several interesting potential next steps. The main questions of interest that remain are:
-- How can the language be made even smaller while retaining or increasing its expressive power? Forth is one way to go about it but it has its flaws from a user's perspective as stack management requires constant mental awareness. If forth's stack management could be automated or greatly aided, it would surely be the optimal bootstrap language.
-- How can effective register management be implemented concisely yet non-naively? Or else, how can variable management be handled efficiently in little code (this matters because of stage 1+ bootstrap, although a stage-0 like this one can simply rely on naive full-spill/full-fill "management").
+The conclusions are mostly encouraging. For the next steps, it would be a good idea to use a higher-level language and focus on language design rather than compiler implementation, lastly putting it all together.

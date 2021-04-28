@@ -1,2 +1,2 @@
 #!/bin/sh
-gcc -g -nostdlib -fPIC -fPIE -Wl,--build-id=none -o arp0 arp0_assembly.s arp0_linux_amd64.s arp0_elf64_static.s arp0.s
+gcc -g -nostdlib -fPIC -fPIE -Wl,--build-id=none -o ul0 ul0_assembly.s ul0_linux_amd64.s ul0_elf64_static.s ul0.s
