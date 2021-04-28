@@ -57,6 +57,7 @@ The implementation is deeply flawed in many ways, but it's a fun proof of concep
 
 A valid program takes the following form:
 
+```
 program = form {form}
 form = "(" expr {expr} ")"
 expr = atom | form
@@ -70,32 +71,42 @@ _char ~ [a-zA-Z]
 _symb ~ [^a-zA-Z0-9\s]
 _num ~ [0-9]
 _any ~ \S
+```
 
 All input is ascii and objects are separated by arbitrarily many whitespace characters (EOT (ascii 3) does not count as whitespace for this purpose).
 For a more accurate depiction of the language recognized by the compiler, see the compiler's source.
 Data is untyped and program validity check is only summary.
 
 The recognized initial constructs are:
+
+```
 (def symb val): defines the symbol symb to take the value val.
 (f), (f x), (f x ... y): call function f on all provided arguments (can be none, and no more than 8).
 (if a b c): if a is non-0, b otherwise c based on the rules in this paragraph.
 (fn () x), (fn (a) x), (fn (a ... b) x): declare a function whose parameters are within the parentheses after the \\, and whose call-time effect is x, as per the rules in this paragraph.
 (nop): do nothing.
+```
 
 The initial functions available in the program are:
+
+```
 (print x): outputs the string x to stdout.
 (not x): boolean not.
 (dec x): returns x-1.
 (inc x): returns x+1.
 (> x y): 1 if x > y else 0.
 (< x y): 1 if x < y else 0.
+```
 
 Strings support some escape sequences:
+
+```
 \0 for NUL.
 \n for newline.
 \t for tab.
 \\ for literal backslash character.
 \" for literal quote character.
+```
 
 ## Conclusions
 
