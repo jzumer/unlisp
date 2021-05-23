@@ -1,15 +1,6 @@
 .global _start
 .text
 
-# PLAN:
-# byte-sized pointer to next free memcell
-# byte-sized count of mem cells used so far
-# .space 256 in .data (fix indices...)
-# instead of mov 0x0,%rax and mov [reg],0x0: redirect to pointed memory and increment pointer
-## since we process args one at a time, latest from-call value is ptr-1 position'd
-# reduce ptrs each time a call invokation is complete
-# IMPORTANT: have to keep track of ptr positions recursively...
-
 _start:
 	call nextch
 	call nextch
@@ -1634,9 +1625,11 @@ accept_form: # A form is a non-empty s-expression whose head is either a special
 		# note that this isn't a reg-reg mov in case previous args overwrote reg values.
 		# The correct effect is to look into the immediate stack (rooted at r15+rsp).
 
+		lea (,%rsi,8), %rsi
 		neg %rsi
 
 		lea reg_codes(%rip), %rdi
+		inc %rcx
 		add %rcx, %rdi
 		movsx (%rdi), %rdi
 
